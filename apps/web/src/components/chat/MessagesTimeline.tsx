@@ -67,6 +67,7 @@ import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
 import {
+  captureVisibleTimelineScrollAnchorSnapshot,
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
@@ -77,11 +78,15 @@ import {
   resolveTimelineMinimapHeightStyle,
   resolveTimelineMinimapIndexFromPointer,
   resolveTimelineMinimapTopPercent,
+  resolveTimelineRowHeight,
+  resolveTimelineRowTop,
+  resolveTimelineScrollAnchorOffset,
   shouldRestoreTimelineRowPosition,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
   TIMELINE_MINIMAP_MIN_ITEMS,
   type TimelineLatestTurn,
+  type TimelineScrollAnchorSnapshot,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -180,7 +185,7 @@ interface MessagesTimelineProps {
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
   contentInsetEndAdjustment: number;
-  onIsAtEndChange: (isAtEnd: boolean) => void;
+  onIsAtEndChange: (isAtEnd: boolean, scrollOffset: number | undefined) => void;
   onManualNavigation: () => void;
 }
 
@@ -367,10 +372,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (!timelineViewportElement || !state || resolveTimelineIsAtEnd(state) !== false) {
       return null;
     }
-    return captureTimelineScrollAnchorSnapshot({
-      root: timelineViewportElement,
+    const rowElements = collectTimelineRowElements(timelineViewportElement);
+    return captureVisibleTimelineScrollAnchorSnapshot({
       rows,
       state,
+      getAnchorBottom: (rowId) => rowElements.get(rowId)?.getBoundingClientRect().bottom ?? null,
     });
   }, [listRef, rows, timelineViewportElement]);
   const restoreTimelineScrollAnchor = useCallback(
@@ -381,10 +387,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         return false;
       }
 
+      const rowElements = collectTimelineRowElements(timelineViewportElement);
       const nextOffset = resolveTimelineScrollAnchorOffset({
-        root: timelineViewportElement,
         snapshot,
         currentScroll: state.scroll,
+        getAnchorBottomAfter: (rowId) =>
+          rowElements.get(rowId)?.getBoundingClientRect().bottom ?? null,
       });
       if (nextOffset === null) {
         return false;
@@ -400,7 +408,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     const state = listRef.current?.getState?.();
     const isAtEnd = resolveTimelineIsAtEnd(state);
     if (isAtEnd !== undefined) {
-      onIsAtEndChange(isAtEnd);
+      onIsAtEndChange(isAtEnd, state?.scroll);
     }
     if (!state || minimapItems.length === 0) {
       timelineScrollAnchorSnapshotRef.current = captureTimelineScrollAnchor();
@@ -598,23 +606,6 @@ interface TimelineMinimapItem {
   readonly assistantText: string | null;
 }
 
-interface TimelinePositionState {
-  readonly contentLength?: number;
-  readonly scroll?: number;
-  readonly scrollLength?: number;
-  readonly positionAtIndex?: (index: number) => number | undefined;
-  readonly sizeAtIndex?: (index: number) => number | undefined;
-}
-
-interface TimelineScrollAnchorCandidate {
-  readonly rowId: string;
-  readonly bottom: number;
-}
-
-interface TimelineScrollAnchorSnapshot {
-  readonly candidates: ReadonlyArray<TimelineScrollAnchorCandidate>;
-}
-
 function collectTimelineRowElements(root: HTMLElement): ReadonlyMap<string, HTMLElement> {
   const rowElements = new Map<string, HTMLElement>();
   const elements = root.querySelectorAll<HTMLElement>("[data-timeline-row-id]");
@@ -625,73 +616,6 @@ function collectTimelineRowElements(root: HTMLElement): ReadonlyMap<string, HTML
     }
   }
   return rowElements;
-}
-
-function captureTimelineScrollAnchorSnapshot(input: {
-  readonly root: HTMLElement;
-  readonly rows: ReadonlyArray<MessagesTimelineRow>;
-  readonly state: TimelinePositionState;
-}): TimelineScrollAnchorSnapshot | null {
-  const scrollTop = input.state.scroll ?? 0;
-  const scrollBottom = scrollTop + (input.state.scrollLength ?? 0);
-  const visibleCandidates: TimelineScrollAnchorCandidate[] = [];
-  const trailingCandidates: TimelineScrollAnchorCandidate[] = [];
-  const rowElements = collectTimelineRowElements(input.root);
-
-  for (let index = 0; index < input.rows.length; index += 1) {
-    const row = input.rows[index];
-    if (!row || !shouldRestoreTimelineRowPosition(row)) {
-      continue;
-    }
-
-    const rowTop = resolveTimelineRowTop(input.state, index);
-    const rowHeight = resolveTimelineRowHeight(input.state, index);
-    if (rowTop === null || rowHeight === null) {
-      continue;
-    }
-
-    const rowBottom = rowTop + Math.max(1, rowHeight);
-    const element = rowElements.get(row.id);
-    if (!element) {
-      continue;
-    }
-
-    const candidate = {
-      rowId: row.id,
-      bottom: element.getBoundingClientRect().bottom,
-    };
-    if (rowTop < scrollBottom && rowBottom > scrollTop) {
-      visibleCandidates.push(candidate);
-    } else if (rowTop >= scrollBottom && trailingCandidates.length < 2) {
-      trailingCandidates.push(candidate);
-    }
-  }
-
-  const candidates = [...visibleCandidates, ...trailingCandidates];
-  return candidates.length > 0 ? { candidates } : null;
-}
-
-function resolveTimelineScrollAnchorOffset(input: {
-  readonly root: HTMLElement;
-  readonly snapshot: TimelineScrollAnchorSnapshot;
-  readonly currentScroll: number | undefined;
-}): number | null {
-  const rowElements = collectTimelineRowElements(input.root);
-  for (const candidate of input.snapshot.candidates) {
-    const element = rowElements.get(candidate.rowId);
-    if (!element) {
-      continue;
-    }
-
-    const nextOffset = resolveCompensatedScrollOffset({
-      currentScroll: input.currentScroll,
-      anchorBottomBefore: candidate.bottom,
-      anchorBottomAfter: element.getBoundingClientRect().bottom,
-    });
-    return nextOffset;
-  }
-
-  return null;
 }
 
 function deriveTimelineMinimapItems(
@@ -737,16 +661,6 @@ function resolveFinalAssistantTextForTurn(
 function compactMinimapPreview(text: string | null | undefined) {
   const compact = text?.replace(/\s+/g, " ").trim() ?? "";
   return compact.length > 0 ? compact : null;
-}
-
-function resolveTimelineRowTop(state: TimelinePositionState, rowIndex: number) {
-  const top = state.positionAtIndex?.(rowIndex);
-  return typeof top === "number" && Number.isFinite(top) ? top : null;
-}
-
-function resolveTimelineRowHeight(state: TimelinePositionState, rowIndex: number) {
-  const height = state.sizeAtIndex?.(rowIndex);
-  return typeof height === "number" && Number.isFinite(height) ? height : null;
 }
 
 function TimelineMinimap({

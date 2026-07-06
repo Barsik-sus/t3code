@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  captureVisibleTimelineScrollAnchorSnapshot,
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
@@ -7,8 +8,25 @@ import {
   resolveCompensatedScrollOffset,
   resolveAssistantMessageCopyState,
   resolveTimelineIsAtEnd,
+  resolveTimelineScrollAnchorOffset,
   shouldRestoreTimelineRowPosition,
+  type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
+
+import type { WorkLogEntry } from "../../session-logic";
+
+let workLogEntrySequence = 0;
+
+function buildWorkLogEntry(overrides: Partial<WorkLogEntry>): WorkLogEntry {
+  const sequence = workLogEntrySequence++;
+  return {
+    id: `work-${sequence + 1}`,
+    createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, sequence)).toISOString(),
+    label: "Tool",
+    tone: "tool",
+    ...overrides,
+  };
+}
 
 describe("timeline scroll policy", () => {
   it("uses strict end state for live-follow ownership", () => {
@@ -38,6 +56,61 @@ describe("timeline scroll policy", () => {
         currentScroll: undefined,
         anchorBottomBefore: 400,
         anchorBottomAfter: 450,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not restore to a trailing offscreen row when visible anchors disappear", () => {
+    const rows: MessagesTimelineRow[] = [
+      {
+        kind: "work",
+        id: "visible-work",
+        createdAt: "2026-01-01T00:00:00Z",
+        groupedEntries: [
+          buildWorkLogEntry({
+            id: "visible-work-entry",
+            createdAt: "2026-01-01T00:00:00Z",
+          }),
+        ],
+      },
+      {
+        kind: "message",
+        id: "trailing-assistant",
+        createdAt: "2026-01-01T00:00:01Z",
+        durationStart: "2026-01-01T00:00:00Z",
+        showAssistantMeta: true,
+        showAssistantCopyButton: true,
+        assistantCopyStreaming: false,
+        message: {
+          id: "assistant-1" as never,
+          role: "assistant",
+          text: "Final answer",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:01Z",
+          updatedAt: "2026-01-01T00:00:02Z",
+          streaming: false,
+        },
+      },
+    ];
+
+    const snapshot = captureVisibleTimelineScrollAnchorSnapshot({
+      rows,
+      state: {
+        scroll: 100,
+        scrollLength: 100,
+        positionAtIndex: (index) => (index === 0 ? 100 : 240),
+        sizeAtIndex: (index) => (index === 0 ? 50 : 80),
+      },
+      getAnchorBottom: (rowId) =>
+        rowId === "visible-work" ? 150 : rowId === "trailing-assistant" ? 320 : null,
+    });
+
+    expect(snapshot?.candidates.map((candidate) => candidate.rowId)).toEqual(["visible-work"]);
+    expect(
+      resolveTimelineScrollAnchorOffset({
+        snapshot: snapshot!,
+        currentScroll: 100,
+        getAnchorBottomAfter: (rowId) => (rowId === "trailing-assistant" ? 120 : null),
       }),
     ).toBeNull();
   });
