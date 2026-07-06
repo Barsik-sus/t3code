@@ -129,7 +129,6 @@ describe("ChildSignalReactor settlement", () => {
     const Stream = await import("effect/Stream");
     const ManagedRuntime = await import("effect/ManagedRuntime");
     const { OrchestrationEngineService } = await import("../Services/OrchestrationEngine.ts");
-    const { ProjectionSnapshotQuery } = await import("../Services/ProjectionSnapshotQuery.ts");
     const { ProjectionThreadRepository } =
       await import("../../persistence/Services/ProjectionThreads.ts");
     const { ChildSignalReactor: ChildSignalReactorTag } =
@@ -159,30 +158,24 @@ describe("ChildSignalReactor settlement", () => {
         return Effect.void;
       },
       streamDomainEvents: Stream.make(sessionSetEvent),
-    };
-    const snapshotsStub = {
-      getThreadDetailById: (threadId: ThreadId) => {
+      getThreadSnapshot: (threadId: ThreadId) => {
         if (threadId === childThreadId) {
           childReads += 1;
           return Effect.succeed(
-            Option.some(
-              makeThread({
-                id: childThreadId,
-                parentThreadId,
-                latestTurnState: childReads <= 2 ? "running" : "completed",
-                sessionStatus: "ready",
-              }),
-            ),
+            makeThread({
+              id: childThreadId,
+              parentThreadId,
+              latestTurnState: childReads <= 2 ? "running" : "completed",
+              sessionStatus: "ready",
+            }),
           );
         }
         return Effect.succeed(
-          Option.some(
-            makeThread({
-              id: parentThreadId,
-              parentThreadId: null,
-              sessionStatus: "ready", // idle: no running turn
-            }),
-          ),
+          makeThread({
+            id: parentThreadId,
+            parentThreadId: null,
+            sessionStatus: "ready", // idle: no running turn
+          }),
         );
       },
     };
@@ -206,12 +199,6 @@ describe("ChildSignalReactor settlement", () => {
           Layer.succeed(
             OrchestrationEngineService,
             engineStub as unknown as (typeof OrchestrationEngineService)["Service"],
-          ),
-        ),
-        Layer.provideMerge(
-          Layer.succeed(
-            ProjectionSnapshotQuery,
-            snapshotsStub as unknown as (typeof ProjectionSnapshotQuery)["Service"],
           ),
         ),
         Layer.provideMerge(

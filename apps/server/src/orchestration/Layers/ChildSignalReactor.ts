@@ -22,7 +22,6 @@ import {
   type ChildSignalReactorShape,
 } from "../Services/ChildSignalReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 
 type ChildCreatedEvent = Extract<OrchestrationEvent, { type: "thread.created" }>;
 type ThreadSessionSetEvent = Extract<OrchestrationEvent, { type: "thread.session-set" }>;
@@ -66,7 +65,6 @@ const hasActivity = (
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const engine = yield* OrchestrationEngineService;
-  const snapshots = yield* ProjectionSnapshotQuery;
   const projectionThreads = yield* ProjectionThreadRepository;
   const commandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`child-signal:${tag}:${uuid}`)));
@@ -74,8 +72,7 @@ const make = Effect.gen(function* () {
   const messageId = () =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => MessageId.make(`child-signal:${uuid}`)));
 
-  const getThread = (threadId: ThreadId) =>
-    snapshots.getThreadDetailById(threadId).pipe(Effect.map(Option.getOrUndefined));
+  const getThread = (threadId: ThreadId) => engine.getThreadSnapshot(threadId);
 
   const appendParentActivity = (input: {
     readonly parentThreadId: ThreadId;
@@ -178,19 +175,19 @@ const make = Effect.gen(function* () {
     });
   });
 
-  // The SQL projection consumes the event stream asynchronously, so when a
-  // session-set event reaches this reactor the child's projected row usually
-  // still shows the turn as running. Re-read until the settlement lands.
+  // The engine's in-memory read model is updated as part of dispatch, so it
+  // is normally already settled when the session-set event arrives; the short
+  // retry only covers residual publish-versus-projection ordering.
   const getSettledChild = Effect.fn("ChildSignalReactor.getSettledChild")(function* (
     threadId: ThreadId,
   ) {
-    for (let attempt = 0; attempt < 25; attempt += 1) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
       const child = yield* getThread(threadId);
       if (!child || child.parentThreadId === null) return undefined;
       if (child.latestTurn !== null && child.latestTurn.state !== "running") {
         return child;
       }
-      yield* Effect.sleep("200 millis");
+      yield* Effect.sleep("100 millis");
     }
     yield* Effect.logWarning("child settlement never became visible in the projection", {
       threadId,
