@@ -113,11 +113,38 @@ export function buildProjectActionItems(input: {
 
 export type BuildThreadActionItemsThread = Pick<
   SidebarThreadSummary,
-  "archivedAt" | "branch" | "createdAt" | "environmentId" | "id" | "projectId" | "title"
+  | "archivedAt"
+  | "branch"
+  | "createdAt"
+  | "environmentId"
+  | "id"
+  | "parentThreadId"
+  | "projectId"
+  | "title"
 > & {
   updatedAt: string;
   latestUserMessageAt?: string | null;
 };
+
+// Ancestor titles root-first for a sub-thread, derived from the parentThreadId
+// chain within the given threads (a missing ancestor simply ends the chain).
+export function resolveThreadAncestryTitles(
+  threadsById: ReadonlyMap<string, BuildThreadActionItemsThread>,
+  thread: BuildThreadActionItemsThread,
+): string[] {
+  const titles: string[] = [];
+  const seen = new Set<string>([thread.id]);
+  let parentId: string | null = thread.parentThreadId;
+  while (parentId !== null && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = threadsById.get(parentId);
+    if (!parent) break;
+    titles.push(parent.title);
+    parentId = parent.parentThreadId;
+  }
+  titles.reverse();
+  return titles;
+}
 
 export function buildThreadActionItems<TThread extends BuildThreadActionItemsThread>(input: {
   threads: ReadonlyArray<TThread>;
@@ -138,13 +165,22 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
   );
   const visibleThreads =
     input.limit === undefined ? sortedThreads : sortedThreads.slice(0, input.limit);
+  // Ancestry resolves against all input threads (including archived ancestors)
+  // so a sub-thread keeps its path even when a parent is archived.
+  const threadsById = new Map<string, BuildThreadActionItemsThread>(
+    input.threads.map((thread) => [thread.id, thread]),
+  );
 
   return visibleThreads.map((thread) => {
     const projectTitle = input.projectTitleById.get(thread.projectId);
+    const ancestryTitles = resolveThreadAncestryTitles(threadsById, thread);
     const descriptionParts: string[] = [];
 
     if (projectTitle) {
       descriptionParts.push(projectTitle);
+    }
+    if (ancestryTitles.length > 0) {
+      descriptionParts.push([...ancestryTitles, thread.title].join(" › "));
     }
     if (thread.branch) {
       descriptionParts.push(`#${thread.branch}`);
@@ -160,7 +196,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
       {
         kind: "action" as const,
         value: `thread:${thread.id}`,
-        searchTerms: [thread.title, projectTitle ?? ``, thread.branch ?? ``],
+        searchTerms: [thread.title, projectTitle ?? ``, thread.branch ?? ``, ...ancestryTitles],
         title: thread.title,
         description: descriptionParts.join(` · `),
         timestamp: formatRelativeTimeLabel(
