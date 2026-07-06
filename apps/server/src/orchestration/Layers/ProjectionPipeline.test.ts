@@ -100,8 +100,12 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
             model: "gpt-5-codex",
           },
           runtimeMode: "full-access",
+          interactionMode: "default",
           branch: null,
           worktreePath: null,
+          parentThreadId: null,
+          origin: { kind: "user" },
+          notify: "none",
           createdAt: now,
           updatedAt: now,
         },
@@ -171,6 +175,179 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       for (const row of stateRows) {
         assert.equal(row.lastAppliedSequence, 3);
       }
+    }),
+  );
+
+  it.effect("projects thread hierarchy and archive cascade metadata", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const later = "2026-01-01T00:00:01.000Z";
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+      };
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-hierarchy-root"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-root"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-hierarchy-root"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-hierarchy-root"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-root"),
+          projectId: ProjectId.make("project-1"),
+          title: "Root",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          parentThreadId: null,
+          origin: { kind: "user" },
+          notify: "none",
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-hierarchy-child"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-child"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-hierarchy-child"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-hierarchy-child"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-child"),
+          projectId: ProjectId.make("project-1"),
+          title: "Child",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          parentThreadId: ThreadId.make("thread-root"),
+          origin: {
+            kind: "agent",
+            creatorThreadId: ThreadId.make("thread-root"),
+          },
+          notify: "steer",
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-hierarchy-grandchild"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-grandchild"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-hierarchy-grandchild"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-hierarchy-grandchild"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-grandchild"),
+          projectId: ProjectId.make("project-1"),
+          title: "Grandchild",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          parentThreadId: ThreadId.make("thread-child"),
+          origin: {
+            kind: "agent",
+            creatorThreadId: ThreadId.make("thread-child"),
+          },
+          notify: "none",
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.archived",
+        eventId: EventId.make("evt-hierarchy-archive"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-grandchild"),
+        occurredAt: later,
+        commandId: CommandId.make("cmd-hierarchy-archive"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-hierarchy-archive"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-grandchild"),
+          archivedAt: later,
+          updatedAt: later,
+          cascadedFrom: ThreadId.make("thread-root"),
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const rows = yield* sql<{
+        readonly threadId: string;
+        readonly parentThreadId: string | null;
+        readonly rootThreadId: string | null;
+        readonly threadDepth: number;
+        readonly originJson: string | null;
+        readonly notifyMode: string | null;
+        readonly archivedCascadedFrom: string | null;
+      }>`
+        SELECT
+          thread_id AS "threadId",
+          parent_thread_id AS "parentThreadId",
+          root_thread_id AS "rootThreadId",
+          thread_depth AS "threadDepth",
+          origin_json AS "originJson",
+          notify_mode AS "notifyMode",
+          archived_cascaded_from AS "archivedCascadedFrom"
+        FROM projection_threads
+        WHERE thread_id IN ('thread-root', 'thread-child', 'thread-grandchild')
+        ORDER BY thread_depth ASC, thread_id ASC
+      `;
+
+      assert.deepEqual(rows, [
+        {
+          threadId: "thread-root",
+          parentThreadId: null,
+          rootThreadId: "thread-root",
+          threadDepth: 0,
+          originJson: '{"kind":"user"}',
+          notifyMode: "none",
+          archivedCascadedFrom: null,
+        },
+        {
+          threadId: "thread-child",
+          parentThreadId: "thread-root",
+          rootThreadId: "thread-root",
+          threadDepth: 1,
+          originJson: '{"kind":"agent","creatorThreadId":"thread-root"}',
+          notifyMode: "steer",
+          archivedCascadedFrom: null,
+        },
+        {
+          threadId: "thread-grandchild",
+          parentThreadId: "thread-child",
+          rootThreadId: "thread-root",
+          threadDepth: 2,
+          originJson: '{"kind":"agent","creatorThreadId":"thread-child"}',
+          notifyMode: "none",
+          archivedCascadedFrom: "thread-root",
+        },
+      ]);
     }),
   );
 });

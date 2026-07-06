@@ -8,12 +8,14 @@
  */
 import {
   IsoDateTime,
+  ChildNotifyMode,
   ModelSelection,
   NonNegativeInt,
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
   ThreadId,
+  ThreadOrigin,
   TurnId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -32,10 +34,16 @@ export const ProjectionThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
+  parentThreadId: Schema.NullOr(ThreadId),
+  rootThreadId: ThreadId,
+  threadDepth: NonNegativeInt,
+  origin: ThreadOrigin,
+  notifyMode: ChildNotifyMode,
   latestTurnId: Schema.NullOr(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),
+  archivedCascadedFrom: Schema.NullOr(ThreadId),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   pendingApprovalCount: NonNegativeInt,
   pendingUserInputCount: NonNegativeInt,
