@@ -1708,6 +1708,111 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("maps informational Claude system messages to runtime notices", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const commandsChangedMessage = {
+        type: "system",
+        subtype: "commands_changed",
+        commands: [
+          {
+            name: "review",
+            description: "Review changes",
+            argumentHint: "<scope>",
+          },
+          {
+            name: "test",
+            description: "Run tests",
+            argumentHint: "",
+          },
+        ],
+        session_id: "sdk-session-notices",
+        uuid: "commands-changed-1",
+      } as unknown as SDKMessage;
+      const notificationMessage = {
+        type: "system",
+        subtype: "notification",
+        key: "permission",
+        text: "Claude is waiting for permission",
+        priority: "medium",
+        session_id: "sdk-session-notices",
+        uuid: "notification-1",
+      } as unknown as SDKMessage;
+      const fallbackMessage = {
+        type: "system",
+        subtype: "model_refusal_fallback",
+        trigger: "refusal",
+        direction: "retry",
+        original_model: "claude-opus-4-5",
+        fallback_model: "claude-sonnet-4-5",
+        request_id: "req-refusal",
+        api_refusal_category: "cyber",
+        content: "Retrying with fallback model",
+        session_id: "sdk-session-notices",
+        uuid: "fallback-1",
+      } as unknown as SDKMessage;
+
+      harness.query.emit(commandsChangedMessage);
+      harness.query.emit(notificationMessage);
+      harness.query.emit(fallbackMessage);
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      const notices = runtimeEvents.filter((event) => event.type === "runtime.notice");
+      assert.equal(notices.length, 2);
+      const commandsNotice = notices.find(
+        (event) =>
+          event.type === "runtime.notice" &&
+          event.payload.message.startsWith("Slash commands updated"),
+      );
+      assert.equal(commandsNotice?.type, "runtime.notice");
+      if (commandsNotice?.type === "runtime.notice") {
+        assert.equal(commandsNotice.payload.message, "Slash commands updated (2 commands)");
+        assert.deepEqual(commandsNotice.payload.detail, commandsChangedMessage);
+      }
+
+      const notificationNotice = notices.find(
+        (event) =>
+          event.type === "runtime.notice" &&
+          event.payload.message === "Claude is waiting for permission",
+      );
+      assert.equal(notificationNotice?.type, "runtime.notice");
+      if (notificationNotice?.type === "runtime.notice") {
+        assert.deepEqual(notificationNotice.payload.detail, notificationMessage);
+      }
+
+      const warning = runtimeEvents.find((event) => event.type === "runtime.warning");
+      assert.equal(warning?.type, "runtime.warning");
+      if (warning?.type === "runtime.warning") {
+        assert.equal(
+          warning.payload.message,
+          "Model refusal fallback: claude-opus-4-5 -> claude-sonnet-4-5, cyber",
+        );
+        assert.deepEqual(warning.payload.detail, fallbackMessage);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("emits thread token usage updates from Claude task progress", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

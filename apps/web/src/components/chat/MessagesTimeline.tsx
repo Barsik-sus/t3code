@@ -48,6 +48,7 @@ import {
   EyeIcon,
   GlobeIcon,
   HammerIcon,
+  InfoIcon,
   MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
@@ -1732,6 +1733,7 @@ type WorkEntryIconName =
   | "eye"
   | "globe"
   | "hammer"
+  | "info"
   | "message-circle"
   | "square-pen"
   | "terminal"
@@ -1753,6 +1755,8 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
       return <GlobeIcon className={className} aria-hidden />;
     case "hammer":
       return <HammerIcon className={className} aria-hidden />;
+    case "info":
+      return <InfoIcon className={className} aria-hidden />;
     case "message-circle":
       return <MessageCircleIcon className={className} aria-hidden />;
     case "square-pen":
@@ -1826,6 +1830,9 @@ function buildToolCallExpandedBody(
   workspaceRoot: string | undefined,
 ): string | null {
   const blocks: string[] = [];
+  if (workEntry.fullDetail?.trim()) {
+    blocks.push(workEntry.fullDetail.trim());
+  }
   if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
     blocks.push(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
   }
@@ -1856,6 +1863,8 @@ function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
   ) {
     return "message-circle";
   }
+  if (workEntry.sourceActivityKind === "runtime.notice") return "info";
+  if (workEntry.sourceActivityKind === "runtime.warning") return "circle-alert";
   if (workEntry.requestKind === "command") return "terminal";
   if (workEntry.requestKind === "file-read") return "eye";
   if (workEntry.requestKind === "file-change") return "square-pen";
@@ -1906,7 +1915,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const [expanded, setExpanded] = useState(false);
   const iconConfig = workToneIcon(workEntry.tone);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
-  const entryIconName = showWarningIndicator ? "x" : workEntryIconName(workEntry);
+  const showNoticeIndicator = workEntry.sourceActivityKind === "runtime.notice";
+  const entryIconName = workEntryIconName(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
   const rawPreview = workEntryPreview(workEntry, workspaceRoot);
   const preview =
@@ -1925,12 +1935,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const iconWrapperClass = cn(
     "flex size-5 shrink-0 items-center justify-center",
     showWarningIndicator
-      ? "text-destructive"
-      : showDestructiveRowStyle
-        ? "text-destructive"
-        : workEntry.tone === "tool" || showFailedIndicator
-          ? "text-muted-foreground/65"
-          : iconConfig.className,
+      ? "text-warning"
+      : showNoticeIndicator
+        ? "text-muted-foreground"
+        : showDestructiveRowStyle
+          ? "text-destructive"
+          : workEntry.tone === "tool" || showFailedIndicator
+            ? "text-muted-foreground/65"
+            : iconConfig.className,
   );
   const headingClass = showWarningIndicator
     ? "font-medium text-warning"

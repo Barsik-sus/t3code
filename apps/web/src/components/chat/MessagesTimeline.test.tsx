@@ -538,6 +538,77 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('data-testid="file-diff"');
   });
 
+  it("renders runtime notice and warning work rows as collapsed inspectable entries", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const noticeMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "notice-entry",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "runtime-notice",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Slash commands updated (1 command)",
+              tone: "info",
+              sourceActivityKind: "runtime.notice",
+              fullDetail: JSON.stringify(
+                {
+                  type: "system",
+                  subtype: "commands_changed",
+                  commands: [{ name: "review" }],
+                },
+                null,
+                2,
+              ),
+            },
+          },
+        ]}
+      />,
+    );
+    const warningMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "warning-entry",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "runtime-warning",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Model refusal fallback",
+              tone: "info",
+              sourceActivityKind: "runtime.warning",
+              fullDetail: JSON.stringify(
+                {
+                  type: "system",
+                  subtype: "model_refusal_fallback",
+                },
+                null,
+                2,
+              ),
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(noticeMarkup).toContain("Slash commands updated (1 command)");
+    expect(noticeMarkup).toContain("lucide-info");
+    expect(noticeMarkup).toContain('role="button"');
+    expect(noticeMarkup).not.toContain("lucide-x");
+    expect(noticeMarkup).not.toContain("commands_changed");
+
+    expect(warningMarkup).toContain("Model refusal fallback");
+    expect(warningMarkup).toContain("lucide-circle-alert");
+    expect(warningMarkup).toContain('role="button"');
+    expect(warningMarkup).not.toContain("lucide-x");
+    expect(warningMarkup).not.toContain("model_refusal_fallback");
+  });
+
   it("renders a failure marker for failed tool lifecycle entries", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

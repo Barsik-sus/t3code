@@ -1309,6 +1309,92 @@ function describeUnknownSdkMessage(kind: string, message: unknown): string {
   return preview ? `${kind} — ${preview}` : `${kind} (no displayable text content)`;
 }
 
+type ClaudeSystemMessage<Subtype extends string> = Extract<
+  SDKMessage,
+  { type: "system"; subtype: Subtype }
+>;
+
+function pluralize(value: number, singular: string, plural = `${singular}s`): string {
+  return `${value.toLocaleString()} ${value === 1 ? singular : plural}`;
+}
+
+function truncateInline(value: string, maxLength = 96): string {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function formatRetryDelay(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 1000) {
+    return `${ms}ms`;
+  }
+  const seconds = ms / 1000;
+  return `${Number.isInteger(seconds) ? seconds.toFixed(0) : seconds.toFixed(1)}s`;
+}
+
+function summarizeCommandsChangedMessage(message: ClaudeSystemMessage<"commands_changed">): string {
+  return `Slash commands updated (${pluralize(message.commands.length, "command")})`;
+}
+
+function summarizeApiRetryMessage(message: ClaudeSystemMessage<"api_retry">): string {
+  const status = message.error_status === null ? message.error : `HTTP ${message.error_status}`;
+  return `Claude API retry ${message.attempt}/${message.max_retries} in ${formatRetryDelay(message.retry_delay_ms)} (${status})`;
+}
+
+function summarizeNotificationMessage(message: ClaudeSystemMessage<"notification">): string {
+  return truncateInline(message.text) || "Claude notification";
+}
+
+function summarizeSessionStateChangedMessage(
+  message: ClaudeSystemMessage<"session_state_changed">,
+): string {
+  return `Claude session ${message.state.replace(/_/gu, " ")}`;
+}
+
+function summarizeTaskUpdatedMessage(message: ClaudeSystemMessage<"task_updated">): string {
+  const parts = [
+    message.patch.status,
+    message.patch.description ? truncateInline(message.patch.description, 60) : undefined,
+    message.patch.is_backgrounded === true ? "backgrounded" : undefined,
+    message.patch.error ? `error: ${truncateInline(message.patch.error, 60)}` : undefined,
+  ].filter((part): part is string => typeof part === "string" && part.length > 0);
+  return parts.length > 0
+    ? `Task ${message.task_id} updated (${parts.join(", ")})`
+    : `Task ${message.task_id} updated`;
+}
+
+function summarizePluginInstallMessage(message: ClaudeSystemMessage<"plugin_install">): string {
+  const name = message.name ? ` ${message.name}` : "";
+  const error = message.error ? `: ${truncateInline(message.error, 72)}` : "";
+  return `Plugin install ${message.status}${name}${error}`;
+}
+
+function summarizeLocalCommandOutputMessage(
+  message: ClaudeSystemMessage<"local_command_output">,
+): string {
+  const preview = truncateInline(message.content);
+  return preview ? `Local command output: ${preview}` : "Local command output";
+}
+
+function summarizeMemoryRecallMessage(message: ClaudeSystemMessage<"memory_recall">): string {
+  return `Memory recalled (${message.mode}, ${pluralize(message.memories.length, "memory", "memories")})`;
+}
+
+function summarizeModelRefusalFallbackMessage(
+  message: ClaudeSystemMessage<"model_refusal_fallback">,
+): string {
+  const category = message.api_refusal_category ? `, ${message.api_refusal_category}` : "";
+  return `Model refusal fallback: ${message.original_model} -> ${message.fallback_model}${category}`;
+}
+
+function summarizeElicitationCompleteMessage(
+  message: ClaudeSystemMessage<"elicitation_complete">,
+): string {
+  return `MCP elicitation completed: ${message.mcp_server_name} (${message.elicitation_id})`;
+}
+
 function sdkNativeItemId(message: SDKMessage): string | undefined {
   if (message.type === "assistant") {
     const maybeId = (message.message as { id?: unknown }).id;
@@ -1716,6 +1802,28 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const stamp = yield* makeEventStamp();
     yield* offerRuntimeEvent({
       type: "runtime.warning",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(turnState ? { turnId: asCanonicalTurnId(turnState.turnId) } : {}),
+      payload: {
+        message,
+        ...(detail !== undefined ? { detail } : {}),
+      },
+      providerRefs: nativeProviderRefs(context),
+    });
+  });
+
+  const emitRuntimeNotice = Effect.fn("emitRuntimeNotice")(function* (
+    context: ClaudeSessionContext,
+    message: string,
+    detail?: unknown,
+  ) {
+    const turnState = context.turnState;
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "runtime.notice",
       eventId: stamp.eventId,
       provider: PROVIDER,
       createdAt: stamp.createdAt,
@@ -2585,6 +2693,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       },
     };
 
+    const rawSubtype = message.subtype;
+    const rawMessage = message as SDKMessage;
     switch (message.subtype) {
       case "init":
         yield* offerRuntimeEvent({
@@ -2753,6 +2863,36 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
+      case "commands_changed":
+        yield* emitRuntimeNotice(context, summarizeCommandsChangedMessage(message), message);
+        return;
+      case "api_retry":
+        yield* emitRuntimeNotice(context, summarizeApiRetryMessage(message), message);
+        return;
+      case "notification":
+        yield* emitRuntimeNotice(context, summarizeNotificationMessage(message), message);
+        return;
+      case "session_state_changed":
+        yield* emitRuntimeNotice(context, summarizeSessionStateChangedMessage(message), message);
+        return;
+      case "task_updated":
+        yield* emitRuntimeNotice(context, summarizeTaskUpdatedMessage(message), message);
+        return;
+      case "plugin_install":
+        yield* emitRuntimeNotice(context, summarizePluginInstallMessage(message), message);
+        return;
+      case "local_command_output":
+        yield* emitRuntimeNotice(context, summarizeLocalCommandOutputMessage(message), message);
+        return;
+      case "memory_recall":
+        yield* emitRuntimeNotice(context, summarizeMemoryRecallMessage(message), message);
+        return;
+      case "model_refusal_fallback":
+        yield* emitRuntimeWarning(context, summarizeModelRefusalFallbackMessage(message), message);
+        return;
+      case "elicitation_complete":
+        yield* emitRuntimeNotice(context, summarizeElicitationCompleteMessage(message), message);
+        return;
       case "mirror_error":
         yield* emitRuntimeError(
           context,
@@ -2763,8 +2903,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       default:
         yield* emitRuntimeWarning(
           context,
-          describeUnknownSdkMessage(`Claude system message '${message.subtype}'`, message),
-          message,
+          describeUnknownSdkMessage(`Claude system message '${rawSubtype}'`, rawMessage),
+          rawMessage,
         );
         return;
     }

@@ -157,6 +157,33 @@ describe("ProviderRuntimeEvent", () => {
     ).toThrow();
   });
 
+  it("decodes runtime.notice payloads with structured detail", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "runtime.notice",
+      eventId: "event-runtime-notice-1",
+      provider: "claudeAgent",
+      createdAt: "2026-02-28T00:00:03.000Z",
+      threadId: "thread-1",
+      payload: {
+        message: "Slash commands updated (2 commands)",
+        detail: {
+          subtype: "commands_changed",
+          commands: [{ name: "test", description: "Run tests", argumentHint: "" }],
+        },
+      },
+    });
+
+    expect(parsed.type).toBe("runtime.notice");
+    if (parsed.type !== "runtime.notice") {
+      throw new Error("expected runtime.notice");
+    }
+    expect(parsed.payload.message).toBe("Slash commands updated (2 commands)");
+    expect(parsed.payload.detail).toEqual({
+      subtype: "commands_changed",
+      commands: [{ name: "test", description: "Run tests", argumentHint: "" }],
+    });
+  });
+
   it("decodes normalized thread token usage snapshots", () => {
     const parsed = decodeRuntimeEvent({
       type: "thread.token-usage.updated",

@@ -2479,6 +2479,93 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBeNull();
   });
 
+  it("records runtime.notice activities with full SDK details", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const commandsChangedDetail = {
+      type: "system",
+      subtype: "commands_changed",
+      commands: [
+        {
+          name: "review",
+          description: "Review changes",
+          argumentHint: "<scope>",
+        },
+      ],
+      uuid: "commands-changed-uuid",
+      session_id: "claude-session-1",
+    };
+    const notificationDetail = {
+      type: "system",
+      subtype: "notification",
+      key: "permissions",
+      text: "Claude is waiting for permission",
+      priority: "medium",
+      timeout_ms: 5000,
+      uuid: "notification-uuid",
+      session_id: "claude-session-1",
+    };
+
+    harness.emit({
+      type: "runtime.notice",
+      eventId: asEventId("evt-commands-changed-notice"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        message: "Slash commands updated (1 command)",
+        detail: commandsChangedDetail,
+      },
+    });
+
+    harness.emit({
+      type: "runtime.notice",
+      eventId: asEventId("evt-notification-notice"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        message: "Claude is waiting for permission",
+        detail: notificationDetail,
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.id === "evt-commands-changed-notice" && activity.kind === "runtime.notice",
+        ) &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.id === "evt-notification-notice" && activity.kind === "runtime.notice",
+        ),
+    );
+
+    const commandsNotice = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-commands-changed-notice",
+    );
+    const commandsPayload =
+      commandsNotice?.payload && typeof commandsNotice.payload === "object"
+        ? (commandsNotice.payload as Record<string, unknown>)
+        : undefined;
+    expect(commandsNotice?.tone).toBe("info");
+    expect(commandsNotice?.summary).toBe("Slash commands updated (1 command)");
+    expect(commandsPayload?.detail).toEqual(commandsChangedDetail);
+
+    const notificationNotice = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-notification-notice",
+    );
+    const notificationPayload =
+      notificationNotice?.payload && typeof notificationNotice.payload === "object"
+        ? (notificationNotice.payload as Record<string, unknown>)
+        : undefined;
+    expect(notificationNotice?.tone).toBe("info");
+    expect(notificationNotice?.summary).toBe("Claude is waiting for permission");
+    expect(notificationPayload?.detail).toEqual(notificationDetail);
+  });
+
   it("maps session/thread lifecycle and item.started into session/activity projections", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

@@ -72,6 +72,7 @@ export interface WorkLogEntry {
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
   toolData?: unknown;
+  fullDetail?: string;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
   /** From runtime item / task payload `status` when present (e.g. tool.updated). */
@@ -719,6 +720,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   };
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
+  const fullDetail = formatRuntimeActivityDetail(activity.kind, payload);
+  if (fullDetail) {
+    entry.fullDetail = fullDetail;
+  }
   if (detail) {
     entry.detail = detail;
   }
@@ -818,6 +823,7 @@ function mergeDerivedWorkLogEntries(
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
   const toolData = next.toolData ?? previous.toolData;
+  const fullDetail = next.fullDetail ?? previous.fullDetail;
   return {
     ...previous,
     ...next,
@@ -832,7 +838,25 @@ function mergeDerivedWorkLogEntries(
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolLifecycleStatus !== undefined ? { toolLifecycleStatus } : {}),
     ...(toolData !== undefined ? { toolData } : {}),
+    ...(fullDetail !== undefined ? { fullDetail } : {}),
   };
+}
+
+function formatRuntimeActivityDetail(
+  activityKind: OrchestrationThreadActivity["kind"],
+  payload: Record<string, unknown> | null,
+): string | null {
+  if (activityKind !== "runtime.notice" && activityKind !== "runtime.warning") {
+    return null;
+  }
+  if (!payload || !("detail" in payload)) {
+    return null;
+  }
+  try {
+    return JSON.stringify(payload.detail, null, 2);
+  } catch {
+    return String(payload.detail);
+  }
 }
 
 function mergeChangedFiles(

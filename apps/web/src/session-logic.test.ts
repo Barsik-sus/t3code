@@ -961,6 +961,44 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.toolData).toEqual(item);
   });
 
+  it("preserves runtime notice and warning details for expanded display", () => {
+    const detail = {
+      type: "system",
+      subtype: "commands_changed",
+      commands: [{ name: "review", description: "Review changes", argumentHint: "" }],
+    };
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "runtime-notice",
+        kind: "runtime.notice",
+        summary: "Slash commands updated (1 command)",
+        payload: {
+          message: "Slash commands updated (1 command)",
+          detail,
+        },
+      }),
+      makeActivity({
+        id: "runtime-warning",
+        kind: "runtime.warning",
+        summary: "Model refusal fallback",
+        payload: {
+          message: "Model refusal fallback",
+          detail: {
+            subtype: "model_refusal_fallback",
+            original_model: "claude-opus-4-5",
+            fallback_model: "claude-sonnet-4-5",
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries[0]?.sourceActivityKind).toBe("runtime.notice");
+    expect(entries[0]?.fullDetail).toBe(JSON.stringify(detail, null, 2));
+    expect(entries[1]?.sourceActivityKind).toBe("runtime.warning");
+    expect(entries[1]?.fullDetail).toContain('"model_refusal_fallback"');
+  });
+
   it("keeps MCP payloads while collapsing lifecycle updates", () => {
     const item = {
       type: "mcpToolCall",
