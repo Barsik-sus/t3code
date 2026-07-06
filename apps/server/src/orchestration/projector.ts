@@ -345,6 +345,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: payload.archivedAt,
+            archivedCascadedFrom: payload.cascadedFrom,
             updatedAt: payload.updatedAt,
           }),
         })),
@@ -356,6 +357,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: null,
+            archivedCascadedFrom: null,
             updatedAt: payload.updatedAt,
           }),
         })),

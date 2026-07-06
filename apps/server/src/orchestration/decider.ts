@@ -3,6 +3,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type OrchestrationThread,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
@@ -17,6 +18,7 @@ import {
   requireThread,
   requireThreadArchived,
   requireThreadAbsent,
+  requireThreadCreateParent,
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
@@ -58,6 +60,67 @@ type PlannedOrchestrationEvent = Omit<OrchestrationEvent, "sequence">;
 type DecideOrchestrationCommandResult =
   | PlannedOrchestrationEvent
   | ReadonlyArray<PlannedOrchestrationEvent>;
+
+function listDescendantThreadsPostOrder(
+  readModel: OrchestrationReadModel,
+  threadId: OrchestrationThread["id"],
+): ReadonlyArray<OrchestrationThread> {
+  const childrenByParent = new Map<string, OrchestrationThread[]>();
+  for (const thread of readModel.threads) {
+    if (thread.parentThreadId === null) {
+      continue;
+    }
+    const children = childrenByParent.get(thread.parentThreadId) ?? [];
+    children.push(thread);
+    childrenByParent.set(thread.parentThreadId, children);
+  }
+
+  const descendants: OrchestrationThread[] = [];
+  const visit = (parentThreadId: OrchestrationThread["id"]) => {
+    for (const child of childrenByParent.get(parentThreadId) ?? []) {
+      visit(child.id);
+      descendants.push(child);
+    }
+  };
+  visit(threadId);
+  return descendants;
+}
+
+const decideThreadArchiveEvent = Effect.fn("decideThreadArchiveEvent")(function* ({
+  command,
+  readModel,
+  cascadedFrom,
+}: {
+  readonly command: Extract<OrchestrationCommand, { type: "thread.archive" }>;
+  readonly readModel: OrchestrationReadModel;
+  readonly cascadedFrom: OrchestrationThread["id"] | null;
+}): Effect.fn.Return<
+  PlannedOrchestrationEvent,
+  OrchestrationCommandInvariantError | PlatformError.PlatformError,
+  Crypto.Crypto
+> {
+  yield* requireThreadNotArchived({
+    readModel,
+    command,
+    threadId: command.threadId,
+  });
+  const occurredAt = yield* nowIso;
+  return {
+    ...(yield* withEventBase({
+      aggregateKind: "thread",
+      aggregateId: command.threadId,
+      occurredAt,
+      commandId: command.commandId,
+    })),
+    type: "thread.archived",
+    payload: {
+      threadId: command.threadId,
+      archivedAt: occurredAt,
+      updatedAt: occurredAt,
+      cascadedFrom,
+    },
+  };
+});
 
 const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
   commands,
@@ -222,6 +285,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      yield* requireThreadCreateParent({
+        readModel,
+        command,
+      });
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -239,6 +306,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          parentThreadId: command.parentThreadId ?? null,
+          origin: command.origin ?? { kind: "user" },
+          notify: command.notify ?? "none",
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -251,6 +321,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const descendantDeleteCommands = listDescendantThreadsPostOrder(readModel, command.threadId)
+        .filter((thread) => thread.deletedAt === null)
+        .map(
+          (thread): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
+            type: "thread.delete",
+            commandId: command.commandId,
+            threadId: thread.id,
+          }),
+        );
+      if (descendantDeleteCommands.length > 0) {
+        return yield* decideCommandSequence({
+          readModel,
+          commands: [...descendantDeleteCommands, command],
+        });
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -268,26 +353,36 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.archive": {
-      yield* requireThreadNotArchived({
-        readModel,
-        command,
-        threadId: command.threadId,
-      });
-      const occurredAt = yield* nowIso;
-      return {
-        ...(yield* withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt,
-          commandId: command.commandId,
-        })),
-        type: "thread.archived",
-        payload: {
-          threadId: command.threadId,
-          archivedAt: occurredAt,
-          updatedAt: occurredAt,
-        },
-      };
+      const descendantArchiveCommands = listDescendantThreadsPostOrder(readModel, command.threadId)
+        .filter((thread) => thread.archivedAt === null)
+        .map(
+          (thread): Extract<OrchestrationCommand, { type: "thread.archive" }> => ({
+            type: "thread.archive",
+            commandId: command.commandId,
+            threadId: thread.id,
+          }),
+        );
+      if (descendantArchiveCommands.length === 0) {
+        return yield* decideThreadArchiveEvent({ command, readModel, cascadedFrom: null });
+      }
+
+      let nextReadModel = readModel;
+      let nextSequence = readModel.snapshotSequence;
+      const plannedEvents: PlannedOrchestrationEvent[] = [];
+      for (const nextCommand of [...descendantArchiveCommands, command]) {
+        const plannedEvent = yield* decideThreadArchiveEvent({
+          command: nextCommand,
+          readModel: nextReadModel,
+          cascadedFrom: nextCommand.threadId === command.threadId ? null : command.threadId,
+        });
+        plannedEvents.push(plannedEvent);
+        nextSequence += 1;
+        nextReadModel = yield* projectEvent(nextReadModel, {
+          ...plannedEvent,
+          sequence: nextSequence,
+        } as OrchestrationEvent).pipe(Effect.orDie);
+      }
+      return plannedEvents;
     }
 
     case "thread.unarchive": {
@@ -296,6 +391,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const descendantUnarchiveCommands = listDescendantThreadsPostOrder(
+        readModel,
+        command.threadId,
+      )
+        .filter(
+          (thread) =>
+            thread.archivedAt !== null &&
+            (thread.archivedCascadedFrom ?? null) === command.threadId,
+        )
+        .map(
+          (thread): Extract<OrchestrationCommand, { type: "thread.unarchive" }> => ({
+            type: "thread.unarchive",
+            commandId: command.commandId,
+            threadId: thread.id,
+          }),
+        );
+      if (descendantUnarchiveCommands.length > 0) {
+        return yield* decideCommandSequence({
+          readModel,
+          commands: [...descendantUnarchiveCommands, command],
+        });
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
