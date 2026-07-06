@@ -47,6 +47,89 @@ export function shouldRestoreTimelineRowPosition(row: MessagesTimelineRow): bool
   return row.kind === "message" || row.kind === "work" || row.kind === "proposed-plan";
 }
 
+export interface TimelinePositionState {
+  readonly contentLength?: number;
+  readonly scroll?: number;
+  readonly scrollLength?: number;
+  readonly positionAtIndex?: (index: number) => number | undefined;
+  readonly sizeAtIndex?: (index: number) => number | undefined;
+}
+
+export interface TimelineScrollAnchorCandidate {
+  readonly rowId: string;
+  readonly bottom: number;
+}
+
+export interface TimelineScrollAnchorSnapshot {
+  readonly candidates: ReadonlyArray<TimelineScrollAnchorCandidate>;
+}
+
+export function resolveTimelineRowTop(state: TimelinePositionState, rowIndex: number) {
+  const top = state.positionAtIndex?.(rowIndex);
+  return typeof top === "number" && Number.isFinite(top) ? top : null;
+}
+
+export function resolveTimelineRowHeight(state: TimelinePositionState, rowIndex: number) {
+  const height = state.sizeAtIndex?.(rowIndex);
+  return typeof height === "number" && Number.isFinite(height) ? height : null;
+}
+
+export function captureVisibleTimelineScrollAnchorSnapshot(input: {
+  readonly rows: ReadonlyArray<MessagesTimelineRow>;
+  readonly state: TimelinePositionState;
+  readonly getAnchorBottom: (rowId: string) => number | null;
+}): TimelineScrollAnchorSnapshot | null {
+  const scrollTop = input.state.scroll ?? 0;
+  const scrollBottom = scrollTop + (input.state.scrollLength ?? 0);
+  const candidates: TimelineScrollAnchorCandidate[] = [];
+
+  for (let index = 0; index < input.rows.length; index += 1) {
+    const row = input.rows[index];
+    if (!row || !shouldRestoreTimelineRowPosition(row)) {
+      continue;
+    }
+
+    const rowTop = resolveTimelineRowTop(input.state, index);
+    const rowHeight = resolveTimelineRowHeight(input.state, index);
+    if (rowTop === null || rowHeight === null) {
+      continue;
+    }
+
+    const rowBottom = rowTop + Math.max(1, rowHeight);
+    if (rowTop >= scrollBottom || rowBottom <= scrollTop) {
+      continue;
+    }
+
+    const bottom = input.getAnchorBottom(row.id);
+    if (bottom !== null) {
+      candidates.push({ rowId: row.id, bottom });
+    }
+  }
+
+  return candidates.length > 0 ? { candidates } : null;
+}
+
+export function resolveTimelineScrollAnchorOffset(input: {
+  readonly snapshot: TimelineScrollAnchorSnapshot;
+  readonly currentScroll: number | undefined;
+  readonly getAnchorBottomAfter: (rowId: string) => number | null;
+}): number | null {
+  for (const candidate of input.snapshot.candidates) {
+    const anchorBottomAfter = input.getAnchorBottomAfter(candidate.rowId);
+    if (anchorBottomAfter === null) {
+      continue;
+    }
+
+    return resolveCompensatedScrollOffset({
+      currentScroll: input.currentScroll,
+      anchorBottomBefore: candidate.bottom,
+      anchorBottomAfter,
+    });
+  }
+
+  return null;
+}
+
 export function resolveTimelineMinimapHeightStyle(itemCount: number): string {
   const naturalHeight = Math.max(1, (itemCount - 1) * TIMELINE_MINIMAP_ITEM_SPACING);
   return `min(${naturalHeight}px, ${TIMELINE_MINIMAP_MAX_HEIGHT_CSS})`;
