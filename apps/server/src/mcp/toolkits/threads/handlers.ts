@@ -349,7 +349,9 @@ const makeHandlers = Effect.gen(function* () {
             attachments: [],
           },
           modelSelection: resolvedModelSelection,
-          titleSeed: title,
+          // An explicit title is authoritative; auto-titling only seeds
+          // threads whose title was derived from the initial prompt.
+          ...(input.title === undefined ? { titleSeed: title } : {}),
           runtimeMode,
           interactionMode,
           createdAt,
