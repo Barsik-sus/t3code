@@ -42,11 +42,17 @@ const CreateChildThreadResult = Schema.Struct({
   title: Schema.String,
 });
 
-const ListThreadOptionsInput = Schema.Struct({});
+// An empty Schema.Struct({}) serializes to JSON Schema without a top-level
+// "type": "object", which strict MCP clients reject for the entire tools/list
+// response. A never-valued record keeps the no-parameter contract while
+// serializing as a plain object schema.
+const EmptyToolInput = Schema.Record(Schema.String, Schema.Never);
+
+const ListThreadOptionsInput = EmptyToolInput;
 
 const ListThreadOptionsResult = Schema.Unknown;
 
-const ListChildThreadsInput = Schema.Struct({});
+const ListChildThreadsInput = EmptyToolInput;
 
 const ListChildThreadsResult = Schema.Struct({
   children: Schema.Array(

@@ -3,6 +3,7 @@ import * as Context from "effect/Context";
 import { Tool } from "effect/unstable/ai";
 
 import {
+  ThreadsToolkit,
   CreateChildThreadTool,
   GetChildPendingRequestsTool,
   InterruptChildThreadTool,
@@ -65,5 +66,14 @@ it("marks read-only and mutating thread tools consistently", () => {
   ]) {
     expect(Context.get(tool.annotations, Tool.Destructive)).toBe(true);
     expect(Context.get(tool.annotations, Tool.OpenWorld)).toBe(false);
+  }
+});
+
+it("serializes every tool's input schema as a plain object schema", () => {
+  // Strict MCP clients validate that each tools/list entry has
+  // inputSchema.type === "object" and reject the whole list otherwise.
+  for (const tool of Object.values(ThreadsToolkit.tools)) {
+    const jsonSchema = Tool.getJsonSchema(tool) as { readonly type?: string };
+    expect.soft(jsonSchema.type, tool.name).toBe("object");
   }
 });
