@@ -22,7 +22,28 @@ export interface TimelineEndState {
 }
 
 export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boolean | undefined {
-  return state?.isNearEnd ?? state?.isAtEnd;
+  return state?.isAtEnd;
+}
+
+export function resolveCompensatedScrollOffset(input: {
+  readonly currentScroll: number | undefined;
+  readonly anchorBottomBefore: number | null;
+  readonly anchorBottomAfter: number | null;
+}): number | null {
+  if (
+    typeof input.currentScroll !== "number" ||
+    input.anchorBottomBefore === null ||
+    input.anchorBottomAfter === null
+  ) {
+    return null;
+  }
+
+  const delta = input.anchorBottomAfter - input.anchorBottomBefore;
+  return Math.abs(delta) >= 0.5 ? input.currentScroll + delta : null;
+}
+
+export function shouldRestoreTimelineRowPosition(row: MessagesTimelineRow): boolean {
+  return row.kind === "message" || row.kind === "work" || row.kind === "proposed-plan";
 }
 
 export function resolveTimelineMinimapHeightStyle(itemCount: number): string {

@@ -4,8 +4,106 @@ import {
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
+  resolveCompensatedScrollOffset,
   resolveAssistantMessageCopyState,
+  resolveTimelineIsAtEnd,
+  shouldRestoreTimelineRowPosition,
 } from "./MessagesTimeline.logic";
+
+describe("timeline scroll policy", () => {
+  it("uses strict end state for live-follow ownership", () => {
+    expect(resolveTimelineIsAtEnd({ isNearEnd: true, isAtEnd: false })).toBe(false);
+    expect(resolveTimelineIsAtEnd({ isNearEnd: false, isAtEnd: true })).toBe(true);
+    expect(resolveTimelineIsAtEnd({ isNearEnd: true })).toBeUndefined();
+    expect(resolveTimelineIsAtEnd(undefined)).toBeUndefined();
+  });
+
+  it("computes anchor-delta scroll compensation", () => {
+    expect(
+      resolveCompensatedScrollOffset({
+        currentScroll: 120,
+        anchorBottomBefore: 400,
+        anchorBottomAfter: 450,
+      }),
+    ).toBe(170);
+    expect(
+      resolveCompensatedScrollOffset({
+        currentScroll: 120,
+        anchorBottomBefore: 400,
+        anchorBottomAfter: 400.25,
+      }),
+    ).toBeNull();
+    expect(
+      resolveCompensatedScrollOffset({
+        currentScroll: undefined,
+        anchorBottomBefore: 400,
+        anchorBottomAfter: 450,
+      }),
+    ).toBeNull();
+  });
+
+  it("restores scroll around content rows instead of structural controls", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "user-1" as never,
+            role: "user",
+            text: "Do it",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "work-entry-1",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "work-1",
+            createdAt: "2026-01-01T00:00:01Z",
+            label: "read",
+            tone: "tool",
+          },
+        },
+        {
+          id: "work-entry-2",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "work-2",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "edit",
+            tone: "tool",
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(shouldRestoreTimelineRowPosition(rows.find((row) => row.id === "user-entry")!)).toBe(
+      true,
+    );
+    expect(shouldRestoreTimelineRowPosition(rows.find((row) => row.kind === "work")!)).toBe(true);
+    expect(shouldRestoreTimelineRowPosition(rows.find((row) => row.kind === "work-toggle")!)).toBe(
+      false,
+    );
+    expect(
+      shouldRestoreTimelineRowPosition({
+        kind: "working",
+        id: "working-indicator-row",
+        createdAt: null,
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {

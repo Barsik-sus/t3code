@@ -14,6 +14,7 @@ import {
   use,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -70,11 +71,13 @@ import {
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveCompensatedScrollOffset,
   resolveTimelineIsAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
   resolveTimelineMinimapHeightStyle,
   resolveTimelineMinimapIndexFromPointer,
   resolveTimelineMinimapTopPercent,
+  shouldRestoreTimelineRowPosition,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
   TIMELINE_MINIMAP_MIN_ITEMS,
@@ -132,7 +135,7 @@ interface TimelineRowSharedState {
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
-  onToggleTurnFold: (turnId: TurnId) => void;
+  onToggleTurnFold: (turnId: TurnId, anchorElement?: HTMLElement) => void;
   onToggleWorkGroup: (groupId: string, anchorElement?: HTMLElement) => void;
 }
 
@@ -217,22 +220,48 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
 
-  const onToggleTurnFold = useCallback((turnId: TurnId) => {
-    setExpandedTurnIds((existing) => {
-      const next = new Set(existing);
-      if (next.has(turnId)) {
-        next.delete(turnId);
-      } else {
-        next.add(turnId);
+  const compensateScrollFromAnchorElement = useCallback(
+    (anchorElement: HTMLElement | undefined, update: () => void) => {
+      const anchorBottomBefore = anchorElement?.getBoundingClientRect().bottom ?? null;
+
+      flushSync(update);
+
+      if (anchorBottomBefore === null || !anchorElement) {
+        return;
       }
-      return next;
-    });
-  }, []);
+
+      const list = listRef.current;
+      const nextOffset = resolveCompensatedScrollOffset({
+        currentScroll: list?.getState?.().scroll,
+        anchorBottomBefore,
+        anchorBottomAfter: anchorElement.getBoundingClientRect().bottom,
+      });
+      if (list && nextOffset !== null) {
+        list.scrollToOffset({ offset: nextOffset, animated: false });
+      }
+    },
+    [listRef],
+  );
+
+  const onToggleTurnFold = useCallback(
+    (turnId: TurnId, anchorElement?: HTMLElement) => {
+      compensateScrollFromAnchorElement(anchorElement, () => {
+        setExpandedTurnIds((existing) => {
+          const next = new Set(existing);
+          if (next.has(turnId)) {
+            next.delete(turnId);
+          } else {
+            next.add(turnId);
+          }
+          return next;
+        });
+      });
+    },
+    [compensateScrollFromAnchorElement],
+  );
   const onToggleWorkGroup = useCallback(
     (groupId: string, anchorElement?: HTMLElement) => {
-      const anchorBottomBeforeToggle = anchorElement?.getBoundingClientRect().bottom ?? null;
-
-      flushSync(() => {
+      compensateScrollFromAnchorElement(anchorElement, () => {
         setExpandedWorkGroupIds((existing) => {
           const next = new Set(existing);
           if (next.has(groupId)) {
@@ -243,23 +272,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           return next;
         });
       });
-
-      if (anchorBottomBeforeToggle === null || !anchorElement) {
-        return;
-      }
-
-      const delta = anchorElement.getBoundingClientRect().bottom - anchorBottomBeforeToggle;
-      if (Math.abs(delta) < 0.5) {
-        return;
-      }
-
-      const list = listRef.current;
-      const currentScroll = list?.getState?.().scroll;
-      if (list && typeof currentScroll === "number") {
-        list.scrollToOffset({ offset: currentScroll + delta, animated: false });
-      }
     },
-    [listRef],
+    [compensateScrollFromAnchorElement],
   );
 
   // An in-session interrupt leaves its turn expanded so the user keeps their
@@ -322,6 +336,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     null,
   );
   const [minimapHasPersistentGutter, setMinimapHasPersistentGutter] = useState(false);
+  const timelineScrollAnchorSnapshotRef = useRef<TimelineScrollAnchorSnapshot | null>(null);
   const handleAnchorReady = useCallback(
     (info: { anchorIndex: number | undefined }) => {
       if (anchorMessageId !== null && info.anchorIndex !== undefined) {
@@ -347,6 +362,40 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       : undefined;
   }, [anchorMessageId, handleAnchorReady, handleAnchorSizeChanged, rows]);
 
+  const captureTimelineScrollAnchor = useCallback(() => {
+    const state = listRef.current?.getState?.();
+    if (!timelineViewportElement || !state || resolveTimelineIsAtEnd(state) !== false) {
+      return null;
+    }
+    return captureTimelineScrollAnchorSnapshot({
+      root: timelineViewportElement,
+      rows,
+      state,
+    });
+  }, [listRef, rows, timelineViewportElement]);
+  const restoreTimelineScrollAnchor = useCallback(
+    (snapshot: TimelineScrollAnchorSnapshot) => {
+      const list = listRef.current;
+      const state = list?.getState?.();
+      if (!timelineViewportElement || !list || !state || resolveTimelineIsAtEnd(state) !== false) {
+        return false;
+      }
+
+      const nextOffset = resolveTimelineScrollAnchorOffset({
+        root: timelineViewportElement,
+        snapshot,
+        currentScroll: state.scroll,
+      });
+      if (nextOffset === null) {
+        return false;
+      }
+
+      list.scrollToOffset({ offset: nextOffset, animated: false });
+      return true;
+    },
+    [listRef, timelineViewportElement],
+  );
+
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();
     const isAtEnd = resolveTimelineIsAtEnd(state);
@@ -354,6 +403,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onIsAtEndChange(isAtEnd);
     }
     if (!state || minimapItems.length === 0) {
+      timelineScrollAnchorSnapshotRef.current = captureTimelineScrollAnchor();
       return;
     }
 
@@ -375,12 +425,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
       strip.dataset.inView = inView ? "true" : "false";
     }
-  }, [listRef, minimapItems, minimapStripMap, onIsAtEndChange]);
+    timelineScrollAnchorSnapshotRef.current = captureTimelineScrollAnchor();
+  }, [captureTimelineScrollAnchor, listRef, minimapItems, minimapStripMap, onIsAtEndChange]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(handleScroll);
     return () => cancelAnimationFrame(frame);
   }, [handleScroll, rows.length]);
+
+  useLayoutEffect(() => {
+    const snapshot = timelineScrollAnchorSnapshotRef.current;
+    if (snapshot) {
+      restoreTimelineScrollAnchor(snapshot);
+    }
+    timelineScrollAnchorSnapshotRef.current = captureTimelineScrollAnchor();
+  }, [captureTimelineScrollAnchor, restoreTimelineScrollAnchor, rows]);
 
   useEffect(() => {
     if (!timelineViewportElement) {
@@ -493,9 +552,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     },
                   }
             }
+            maintainScrollAtEndThreshold={0}
             maintainVisibleContentPosition={{
               data: true,
-              size: false,
+              size: true,
+              shouldRestorePosition: shouldRestoreTimelineRowPosition,
             }}
             onScroll={handleScroll}
             className="scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5"
@@ -543,6 +604,94 @@ interface TimelinePositionState {
   readonly scrollLength?: number;
   readonly positionAtIndex?: (index: number) => number | undefined;
   readonly sizeAtIndex?: (index: number) => number | undefined;
+}
+
+interface TimelineScrollAnchorCandidate {
+  readonly rowId: string;
+  readonly bottom: number;
+}
+
+interface TimelineScrollAnchorSnapshot {
+  readonly candidates: ReadonlyArray<TimelineScrollAnchorCandidate>;
+}
+
+function collectTimelineRowElements(root: HTMLElement): ReadonlyMap<string, HTMLElement> {
+  const rowElements = new Map<string, HTMLElement>();
+  const elements = root.querySelectorAll<HTMLElement>("[data-timeline-row-id]");
+  for (const element of elements) {
+    const rowId = element.dataset.timelineRowId;
+    if (rowId) {
+      rowElements.set(rowId, element);
+    }
+  }
+  return rowElements;
+}
+
+function captureTimelineScrollAnchorSnapshot(input: {
+  readonly root: HTMLElement;
+  readonly rows: ReadonlyArray<MessagesTimelineRow>;
+  readonly state: TimelinePositionState;
+}): TimelineScrollAnchorSnapshot | null {
+  const scrollTop = input.state.scroll ?? 0;
+  const scrollBottom = scrollTop + (input.state.scrollLength ?? 0);
+  const visibleCandidates: TimelineScrollAnchorCandidate[] = [];
+  const trailingCandidates: TimelineScrollAnchorCandidate[] = [];
+  const rowElements = collectTimelineRowElements(input.root);
+
+  for (let index = 0; index < input.rows.length; index += 1) {
+    const row = input.rows[index];
+    if (!row || !shouldRestoreTimelineRowPosition(row)) {
+      continue;
+    }
+
+    const rowTop = resolveTimelineRowTop(input.state, index);
+    const rowHeight = resolveTimelineRowHeight(input.state, index);
+    if (rowTop === null || rowHeight === null) {
+      continue;
+    }
+
+    const rowBottom = rowTop + Math.max(1, rowHeight);
+    const element = rowElements.get(row.id);
+    if (!element) {
+      continue;
+    }
+
+    const candidate = {
+      rowId: row.id,
+      bottom: element.getBoundingClientRect().bottom,
+    };
+    if (rowTop < scrollBottom && rowBottom > scrollTop) {
+      visibleCandidates.push(candidate);
+    } else if (rowTop >= scrollBottom && trailingCandidates.length < 2) {
+      trailingCandidates.push(candidate);
+    }
+  }
+
+  const candidates = [...visibleCandidates, ...trailingCandidates];
+  return candidates.length > 0 ? { candidates } : null;
+}
+
+function resolveTimelineScrollAnchorOffset(input: {
+  readonly root: HTMLElement;
+  readonly snapshot: TimelineScrollAnchorSnapshot;
+  readonly currentScroll: number | undefined;
+}): number | null {
+  const rowElements = collectTimelineRowElements(input.root);
+  for (const candidate of input.snapshot.candidates) {
+    const element = rowElements.get(candidate.rowId);
+    if (!element) {
+      continue;
+    }
+
+    const nextOffset = resolveCompensatedScrollOffset({
+      currentScroll: input.currentScroll,
+      anchorBottomBefore: candidate.bottom,
+      anchorBottomAfter: element.getBoundingClientRect().bottom,
+    });
+    return nextOffset;
+  }
+
+  return null;
 }
 
 function deriveTimelineMinimapItems(
@@ -964,7 +1113,12 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
         type="button"
         aria-expanded={row.expanded}
         data-scroll-anchor-ignore
-        onClick={() => ctx.onToggleTurnFold(row.turnId)}
+        onClick={(event) => {
+          const anchorElement =
+            event.currentTarget.closest<HTMLElement>("[data-timeline-row-id]") ??
+            event.currentTarget;
+          ctx.onToggleTurnFold(row.turnId, anchorElement);
+        }}
         className="flex cursor-pointer select-none items-center gap-1 rounded-md px-1 text-xs text-muted-foreground tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
       >
         <span>{row.label}</span>
