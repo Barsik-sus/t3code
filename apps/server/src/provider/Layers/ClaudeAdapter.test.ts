@@ -1784,8 +1784,12 @@ describe("ClaudeAdapterLive", () => {
       );
       assert.equal(commandsNotice?.type, "runtime.notice");
       if (commandsNotice?.type === "runtime.notice") {
-        assert.equal(commandsNotice.payload.message, "Slash commands updated (2 commands)");
-        assert.deepEqual(commandsNotice.payload.detail, commandsChangedMessage);
+        assert.equal(commandsNotice.payload.message, "Slash commands updated: 2 added (2 total)");
+        assert.deepEqual(commandsNotice.payload.detail, {
+          added: ["review", "test"],
+          removed: [],
+          sdkMessage: commandsChangedMessage,
+        });
       }
 
       const notificationNotice = notices.find(
@@ -1806,6 +1810,187 @@ describe("ClaudeAdapterLive", () => {
           "Model refusal fallback: claude-opus-4-5 -> claude-sonnet-4-5, cyber",
         );
         assert.deepEqual(warning.payload.detail, fallbackMessage);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("suppresses unchanged Claude command sync messages across turns", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "init",
+        apiKeySource: "none",
+        claude_code_version: "test",
+        cwd: "/tmp/claude-adapter-test",
+        tools: [],
+        mcp_servers: [],
+        model: "claude-sonnet-4-5",
+        permissionMode: "bypassPermissions",
+        slash_commands: ["review", "test"],
+        output_style: "default",
+        skills: [],
+        plugins: [],
+        session_id: "sdk-session-command-sync",
+        uuid: "init-command-sync",
+      } as unknown as SDKMessage);
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "first",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "commands_changed",
+        commands: [
+          { name: "review", description: "Review changes", argumentHint: "" },
+          { name: "test", description: "Run tests", argumentHint: "" },
+        ],
+        session_id: "sdk-session-command-sync",
+        uuid: "commands-same-1",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-command-sync",
+        uuid: "result-command-sync-1",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "second",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "commands_changed",
+        commands: [
+          { name: "test", description: "Run tests", argumentHint: "" },
+          { name: "review", description: "Review changes", argumentHint: "" },
+        ],
+        session_id: "sdk-session-command-sync",
+        uuid: "commands-same-2",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-command-sync",
+        uuid: "result-command-sync-2",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      const commandNotices = runtimeEvents.filter(
+        (event) =>
+          event.type === "runtime.notice" &&
+          event.payload.message.startsWith("Slash commands updated"),
+      );
+      assert.equal(commandNotices.length, 0);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("emits a Claude command sync notice with added and removed command names", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "init",
+        apiKeySource: "none",
+        claude_code_version: "test",
+        cwd: "/tmp/claude-adapter-test",
+        tools: [],
+        mcp_servers: [],
+        model: "claude-sonnet-4-5",
+        permissionMode: "bypassPermissions",
+        slash_commands: ["review", "test"],
+        output_style: "default",
+        skills: [],
+        plugins: [],
+        session_id: "sdk-session-command-diff",
+        uuid: "init-command-diff",
+      } as unknown as SDKMessage);
+
+      const changedMessage = {
+        type: "system",
+        subtype: "commands_changed",
+        commands: [
+          { name: "deploy", description: "Deploy preview", argumentHint: "" },
+          { name: "test", description: "Run tests", argumentHint: "" },
+        ],
+        session_id: "sdk-session-command-diff",
+        uuid: "commands-diff-1",
+      } as unknown as SDKMessage;
+      harness.query.emit(changedMessage);
+      harness.query.emit(changedMessage);
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      const commandNotices = runtimeEvents.filter(
+        (event) =>
+          event.type === "runtime.notice" &&
+          event.payload.message.startsWith("Slash commands updated"),
+      );
+      assert.equal(commandNotices.length, 1);
+      const notice = commandNotices[0];
+      assert.equal(notice?.type, "runtime.notice");
+      if (notice?.type === "runtime.notice") {
+        assert.equal(
+          notice.payload.message,
+          "Slash commands updated: 1 added, 1 removed (2 total)",
+        );
+        assert.deepEqual(notice.payload.detail, {
+          added: ["deploy"],
+          removed: ["review"],
+          sdkMessage: changedMessage,
+        });
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

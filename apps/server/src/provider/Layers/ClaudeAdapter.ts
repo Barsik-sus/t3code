@@ -176,6 +176,8 @@ interface ClaudeTaskState {
   readonly blockedBy: Set<string>;
 }
 
+type ClaudeCommandSnapshot = ReadonlyMap<string, string | undefined>;
+
 interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
@@ -197,6 +199,7 @@ interface ClaudeSessionContext {
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
+  lastKnownSlashCommands: ClaudeCommandSnapshot | undefined;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
   stopped: boolean;
@@ -1334,10 +1337,6 @@ function formatRetryDelay(ms: number): string {
   return `${Number.isInteger(seconds) ? seconds.toFixed(0) : seconds.toFixed(1)}s`;
 }
 
-function summarizeCommandsChangedMessage(message: ClaudeSystemMessage<"commands_changed">): string {
-  return `Slash commands updated (${pluralize(message.commands.length, "command")})`;
-}
-
 function summarizeApiRetryMessage(message: ClaudeSystemMessage<"api_retry">): string {
   const status = message.error_status === null ? message.error : `HTTP ${message.error_status}`;
   return `Claude API retry ${message.attempt}/${message.max_retries} in ${formatRetryDelay(message.retry_delay_ms)} (${status})`;
@@ -1393,6 +1392,111 @@ function summarizeElicitationCompleteMessage(
   message: ClaudeSystemMessage<"elicitation_complete">,
 ): string {
   return `MCP elicitation completed: ${message.mcp_server_name} (${message.elicitation_id})`;
+}
+
+function normalizeCommandName(value: string): string | undefined {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeCommandDescription(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function commandSnapshotFromNames(names: ReadonlyArray<string>): ClaudeCommandSnapshot {
+  const snapshot = new Map<string, string | undefined>();
+  for (const rawName of names) {
+    const name = normalizeCommandName(rawName);
+    if (name) {
+      snapshot.set(name, undefined);
+    }
+  }
+  return snapshot;
+}
+
+function commandSnapshotFromCommands(
+  commands: ClaudeSystemMessage<"commands_changed">["commands"],
+): ClaudeCommandSnapshot {
+  const snapshot = new Map<string, string | undefined>();
+  for (const command of commands) {
+    const name = normalizeCommandName(command.name);
+    if (name) {
+      snapshot.set(name, normalizeCommandDescription(command.description));
+    }
+  }
+  return snapshot;
+}
+
+function diffCommandSnapshots(
+  previous: ClaudeCommandSnapshot | undefined,
+  next: ClaudeCommandSnapshot,
+): {
+  readonly added: ReadonlyArray<string>;
+  readonly removed: ReadonlyArray<string>;
+  readonly changed: ReadonlyArray<string>;
+  readonly total: number;
+} {
+  const added: string[] = [];
+  const removed: string[] = [];
+  const changed: string[] = [];
+
+  for (const [name, description] of next) {
+    if (!previous?.has(name)) {
+      added.push(name);
+      continue;
+    }
+    const previousDescription = previous.get(name);
+    if (
+      previousDescription !== undefined &&
+      description !== undefined &&
+      previousDescription !== description
+    ) {
+      changed.push(name);
+    }
+  }
+
+  if (previous) {
+    for (const name of previous.keys()) {
+      if (!next.has(name)) {
+        removed.push(name);
+      }
+    }
+  }
+
+  const sortNames = (names: string[]) => names.sort((left, right) => left.localeCompare(right));
+  return {
+    added: sortNames(added),
+    removed: sortNames(removed),
+    changed: sortNames(changed),
+    total: next.size,
+  };
+}
+
+function commandDiffPart(count: number, label: string): string | undefined {
+  return count > 0 ? `${count.toLocaleString()} ${label}` : undefined;
+}
+
+function summarizeCommandDiff(diff: {
+  readonly added: ReadonlyArray<string>;
+  readonly removed: ReadonlyArray<string>;
+  readonly changed: ReadonlyArray<string>;
+  readonly total: number;
+}): string {
+  const parts = [
+    commandDiffPart(diff.added.length, "added"),
+    commandDiffPart(diff.removed.length, "removed"),
+    commandDiffPart(diff.changed.length, "changed"),
+  ].filter((part): part is string => part !== undefined);
+  return `Slash commands updated: ${parts.join(", ")} (${diff.total.toLocaleString()} total)`;
+}
+
+function commandSnapshotsDiffer(diff: {
+  readonly added: ReadonlyArray<string>;
+  readonly removed: ReadonlyArray<string>;
+  readonly changed: ReadonlyArray<string>;
+}): boolean {
+  return diff.added.length > 0 || diff.removed.length > 0 || diff.changed.length > 0;
 }
 
 function sdkNativeItemId(message: SDKMessage): string | undefined {
@@ -2697,6 +2801,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const rawMessage = message as SDKMessage;
     switch (message.subtype) {
       case "init":
+        context.lastKnownSlashCommands = commandSnapshotFromNames(message.slash_commands);
         yield* offerRuntimeEvent({
           ...base,
           type: "session.configured",
@@ -2864,7 +2969,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "commands_changed":
-        yield* emitRuntimeNotice(context, summarizeCommandsChangedMessage(message), message);
+        {
+          const nextCommands = commandSnapshotFromCommands(message.commands);
+          const diff = diffCommandSnapshots(context.lastKnownSlashCommands, nextCommands);
+          context.lastKnownSlashCommands = nextCommands;
+          if (commandSnapshotsDiffer(diff)) {
+            yield* emitRuntimeNotice(context, summarizeCommandDiff(diff), {
+              added: diff.added,
+              removed: diff.removed,
+              ...(diff.changed.length > 0 ? { changed: diff.changed } : {}),
+              sdkMessage: message,
+            });
+          }
+        }
         return;
       case "api_retry":
         yield* emitRuntimeNotice(context, summarizeApiRetryMessage(message), message);
@@ -3697,6 +3814,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
+        lastKnownSlashCommands: undefined,
         lastAssistantUuid: resumeState?.resumeSessionAt,
         lastThreadStartedId: undefined,
         stopped: false,
