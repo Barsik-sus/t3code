@@ -10,7 +10,12 @@
  *
  * @module OrchestrationEngineService
  */
-import type { OrchestrationCommand, OrchestrationEvent } from "@t3tools/contracts";
+import type {
+  OrchestrationCommand,
+  OrchestrationEvent,
+  OrchestrationThread,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
@@ -56,6 +61,18 @@ export interface OrchestrationEngineShape {
    * This is a hot runtime stream (new events only), not a historical replay.
    */
   readonly streamDomainEvents: Stream.Stream<OrchestrationEvent>;
+
+  /**
+   * Read a thread from the engine's in-memory read model.
+   *
+   * Unlike the SQL projection, which consumes the event stream asynchronously
+   * and may lag it by seconds, this state is updated as part of dispatch, so
+   * event-stream consumers (reactors) see state consistent with the events
+   * they receive.
+   */
+  readonly getThreadSnapshot: (
+    threadId: ThreadId,
+  ) => Effect.Effect<OrchestrationThread | undefined>;
 }
 
 /**
