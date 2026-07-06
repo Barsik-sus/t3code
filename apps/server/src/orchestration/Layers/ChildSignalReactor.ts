@@ -125,9 +125,12 @@ const make = Effect.gen(function* () {
       return;
     }
     const parent = yield* getThread(input.parentThreadId);
-    if (!parent || parent.session?.status !== "running") {
+    if (!parent || parent.deletedAt !== null || parent.archivedAt !== null) {
       return;
     }
+    // A turn.start on a session with a live running turn is queued into that
+    // turn (steer); on an idle session it starts a new turn, so a creator
+    // that ended its turn still learns about the child signal.
     yield* engine.dispatch({
       type: "thread.turn.start",
       commandId: yield* commandId("steer"),
@@ -175,12 +178,32 @@ const make = Effect.gen(function* () {
     });
   });
 
+  // The SQL projection consumes the event stream asynchronously, so when a
+  // session-set event reaches this reactor the child's projected row usually
+  // still shows the turn as running. Re-read until the settlement lands.
+  const getSettledChild = Effect.fn("ChildSignalReactor.getSettledChild")(function* (
+    threadId: ThreadId,
+  ) {
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const child = yield* getThread(threadId);
+      if (!child || child.parentThreadId === null) return undefined;
+      if (child.latestTurn !== null && child.latestTurn.state !== "running") {
+        return child;
+      }
+      yield* Effect.sleep("200 millis");
+    }
+    yield* Effect.logWarning("child settlement never became visible in the projection", {
+      threadId,
+    });
+    return undefined;
+  });
+
   const processSettlement = Effect.fn("ChildSignalReactor.processSettlement")(function* (
     event: ThreadSessionSetEvent,
   ) {
-    const child = yield* getThread(event.payload.threadId);
+    if (event.payload.session.status === "running") return;
+    const child = yield* getSettledChild(event.payload.threadId);
     if (!child || child.parentThreadId === null || child.latestTurn === null) return;
-    if (child.latestTurn.state === "running") return;
     const parent = yield* getThread(child.parentThreadId);
     if (!parent) return;
     const turnId = child.latestTurn.turnId;
@@ -195,7 +218,7 @@ const make = Effect.gen(function* () {
     ) {
       return;
     }
-    const errorDetail = child.session?.lastError ?? undefined;
+    const errorDetail = child.session?.lastError ?? event.payload.session.lastError ?? undefined;
     yield* appendParentActivity({
       parentThreadId: child.parentThreadId,
       kind: "thread.child.turn-settled",
@@ -365,6 +388,9 @@ const make = Effect.gen(function* () {
 });
 
 export const ChildSignalReactorLive = Layer.effect(ChildSignalReactor, make);
+
+/** Exposed for tests. */
+export const makeChildSignalReactorForTest = make;
 
 export const __testing = {
   CHILD_CREATED_SUMMARY,
