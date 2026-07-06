@@ -31,6 +31,22 @@ import * as VcsStatusBroadcaster from "../../../vcs/VcsStatusBroadcaster.ts";
 
 const RUNTIME_MODES = ["approval-required", "auto-accept-edits", "full-access"] as const;
 const INTERACTION_MODES = ["default", "plan"] as const;
+
+// Enforcement facts per mode. The Codex sandbox claims are pinned to
+// runtimeModeToThreadConfig in CodexSessionRuntime.ts by handlers.test.ts —
+// update both together.
+export const RUNTIME_MODE_DESCRIPTIONS: Record<(typeof RUNTIME_MODES)[number], string> = {
+  "approval-required":
+    "Permission-gated tool calls are routed as approval requests. Codex sessions run in a read-only sandbox; any write is requested as an approval.",
+  "auto-accept-edits":
+    "File edits apply without prompts; other permission-gated actions are still routed as approval requests. Codex sessions run in a workspace-write sandbox.",
+  "full-access": "No approval prompts. Codex sessions run with full system access.",
+};
+
+export const INTERACTION_MODE_DESCRIPTIONS: Record<(typeof INTERACTION_MODES)[number], string> = {
+  default: "The provider's standard interaction mode.",
+  plan: "The session produces a plan before making changes. Claude sessions run in the plan permission mode, which restricts file modifications until a plan is approved.",
+};
 const MAX_WAIT_SECONDS = 600;
 const POLL_INTERVAL_MS = 250;
 
@@ -405,8 +421,14 @@ const makeHandlers = Effect.gen(function* () {
               optionDescriptors: model.capabilities?.optionDescriptors ?? [],
             })),
           })),
-          runtimeModes: [...RUNTIME_MODES],
-          interactionModes: [...INTERACTION_MODES],
+          runtimeModes: RUNTIME_MODES.map((id) => ({
+            id,
+            description: RUNTIME_MODE_DESCRIPTIONS[id],
+          })),
+          interactionModes: INTERACTION_MODES.map((id) => ({
+            id,
+            description: INTERACTION_MODE_DESCRIPTIONS[id],
+          })),
           defaults: {
             modelSelection: parent.modelSelection,
             runtimeMode: parent.runtimeMode,

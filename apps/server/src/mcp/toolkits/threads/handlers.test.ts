@@ -257,3 +257,26 @@ describe("threads MCP toolkit helpers", () => {
     expect(pending).toEqual({ kind: "pending" });
   });
 });
+
+describe("runtime mode descriptions", () => {
+  vitestIt("stay pinned to the codex sandbox mapping", async () => {
+    const { RUNTIME_MODE_DESCRIPTIONS } = await import("./handlers.ts");
+    const { runtimeModeToThreadConfig } =
+      await import("../../../provider/Layers/CodexSessionRuntime.ts");
+    const claims = {
+      "approval-required": "read-only sandbox",
+      "auto-accept-edits": "workspace-write sandbox",
+      "full-access": "full system access",
+    } as const;
+    const sandboxByClaim = {
+      "read-only sandbox": "read-only",
+      "workspace-write sandbox": "workspace-write",
+      "full system access": "danger-full-access",
+    } as const;
+    for (const mode of ["approval-required", "auto-accept-edits", "full-access"] as const) {
+      const claim = claims[mode];
+      expect(RUNTIME_MODE_DESCRIPTIONS[mode]).toContain(claim);
+      expect(runtimeModeToThreadConfig(mode).sandbox).toBe(sandboxByClaim[claim]);
+    }
+  });
+});
