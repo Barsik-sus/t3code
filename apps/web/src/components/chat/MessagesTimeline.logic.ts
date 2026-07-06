@@ -8,6 +8,7 @@ import {
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
+import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
 export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
@@ -185,6 +186,83 @@ export function computeMessageDurationStart(
 
 export function normalizeCompactToolLabel(value: string): string {
   return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
+}
+
+function capitalizePhrase(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return value;
+  }
+  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
+}
+
+export function deriveToolWorkEntryHeading(workEntry: WorkLogEntry): string {
+  if (!workEntry.toolTitle) {
+    return capitalizePhrase(normalizeCompactToolLabel(workEntry.label));
+  }
+  return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
+}
+
+export function deriveWorkEntryPreview(
+  workEntry: Pick<WorkLogEntry, "detail" | "command" | "changedFiles" | "itemType" | "requestKind">,
+  workspaceRoot: string | undefined,
+): string | null {
+  const changedFilesPreview = deriveChangedFilesPreview(workEntry, workspaceRoot);
+  if (workEntry.itemType === "file_change" || workEntry.requestKind === "file-change") {
+    return changedFilesPreview ?? workEntry.command ?? workEntry.detail ?? null;
+  }
+  if (workEntry.command) return workEntry.command;
+  if (workEntry.detail) return workEntry.detail;
+  return changedFilesPreview;
+}
+
+export interface DerivedWorkEntryDisplay {
+  heading: string;
+  preview: string | null;
+  displayText: string;
+}
+
+export function deriveWorkEntryDisplay(
+  workEntry: WorkLogEntry,
+  workspaceRoot: string | undefined,
+): DerivedWorkEntryDisplay {
+  const heading = deriveToolWorkEntryHeading(workEntry);
+  const rawPreview = deriveWorkEntryPreview(workEntry, workspaceRoot);
+  const preview =
+    rawPreview &&
+    normalizeCompactToolLabel(rawPreview).toLowerCase() ===
+      normalizeCompactToolLabel(heading).toLowerCase()
+      ? null
+      : rawPreview;
+
+  return {
+    heading,
+    preview,
+    displayText: preview ? `${heading} - ${preview}` : heading,
+  };
+}
+
+function deriveChangedFilesPreview(
+  workEntry: Pick<WorkLogEntry, "changedFiles">,
+  workspaceRoot: string | undefined,
+): string | null {
+  if ((workEntry.changedFiles?.length ?? 0) === 0) return null;
+  const [firstPath] = workEntry.changedFiles ?? [];
+  if (!firstPath) return null;
+  const displayPath = formatWorkspaceRelativePath(firstPath, workspaceRoot);
+  return workEntry.changedFiles!.length === 1
+    ? displayPath
+    : `${displayPath} +${workEntry.changedFiles!.length - 1} more`;
+}
+
+export function shouldToggleWorkEntryRowFromKeyDown({
+  key,
+  targetIsCurrentTarget,
+}: {
+  key: string;
+  targetIsCurrentTarget: boolean;
+}): boolean {
+  return targetIsCurrentTarget && (key === "Enter" || key === " ");
 }
 
 export function resolveAssistantMessageCopyState({
