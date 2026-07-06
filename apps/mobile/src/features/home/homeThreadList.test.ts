@@ -41,6 +41,10 @@ function makeThread(
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     ...input,
+    parentThreadId: input.parentThreadId ?? null,
+    origin: input.origin ?? { kind: "user" as const },
+    rootThreadId: input.rootThreadId ?? input.id,
+    depth: input.depth ?? 0,
   };
 }
 

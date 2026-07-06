@@ -293,6 +293,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           runtimeMode: "full-access",
           branch: null,
           worktreePath: null,
+          parentThreadId: null,
+          origin: { kind: "user" as const },
+          rootThreadId: ThreadId.make("thread-1"),
+          depth: 0,
           latestTurn: {
             turnId: asTurnId("turn-1"),
             state: "completed",
@@ -403,6 +407,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           runtimeMode: "full-access",
           branch: null,
           worktreePath: null,
+          parentThreadId: null,
+          origin: { kind: "user" as const },
+          rootThreadId: ThreadId.make("thread-1"),
+          depth: 0,
           latestTurn: {
             turnId: asTurnId("turn-1"),
             state: "completed",

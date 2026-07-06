@@ -46,6 +46,10 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     latestTurn: null,
     branch: null,
     worktreePath: null,
+    parentThreadId: null,
+    origin: { kind: "user" as const },
+    rootThreadId: threadId,
+    depth: 0,
     ...overrides,
   };
 }

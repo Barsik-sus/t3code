@@ -3,6 +3,7 @@ import {
   EnvironmentId,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
+  ProviderInstanceId,
   ThreadId,
   type ClientOrchestrationCommand,
 } from "@t3tools/contracts";
@@ -21,7 +22,7 @@ import {
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
-import { archiveThread, createProject, stopThreadSession } from "./commands.ts";
+import { archiveThread, createProject, createThread, stopThreadSession } from "./commands.ts";
 
 const TEST_CRYPTO_LAYER = Layer.succeed(
   Crypto.Crypto,
@@ -130,6 +131,58 @@ describe("environment commands", () => {
           type: "thread.archive",
           commandId: "archive-command",
           threadId: "thread-1",
+        },
+      ]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("preserves child thread metadata in createThread commands", () =>
+    Effect.gen(function* () {
+      const dispatched: ClientOrchestrationCommand[] = [];
+      const supervisor = yield* makeSupervisor(dispatched);
+
+      yield* createThread({
+        commandId: CommandId.make("create-child-command"),
+        threadId: ThreadId.make("thread-child-1"),
+        projectId: ProjectId.make("project-1"),
+        title: "Child Thread",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "main",
+        worktreePath: null,
+        parentThreadId: ThreadId.make("thread-parent-1"),
+        origin: {
+          kind: "agent",
+          creatorThreadId: ThreadId.make("thread-parent-1"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerSessionId: "session-1",
+        },
+        notify: "steer",
+        createdAt: "2026-06-06T00:02:00.000Z",
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      expect(dispatched).toEqual([
+        {
+          type: "thread.create",
+          commandId: "create-child-command",
+          threadId: "thread-child-1",
+          projectId: "project-1",
+          title: "Child Thread",
+          modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "main",
+          worktreePath: null,
+          parentThreadId: "thread-parent-1",
+          origin: {
+            kind: "agent",
+            creatorThreadId: "thread-parent-1",
+            providerInstanceId: "codex",
+            providerSessionId: "session-1",
+          },
+          notify: "steer",
+          createdAt: "2026-06-06T00:02:00.000Z",
         },
       ]);
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),

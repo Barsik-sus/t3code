@@ -292,6 +292,10 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
       interactionMode: "default",
       branch: null,
       worktreePath: null,
+      parentThreadId: null,
+      origin: { kind: "user" as const },
+      rootThreadId: activeThreadId,
+      depth: 0,
       latestTurn: null,
       createdAt: now,
       updatedAt: now,
@@ -316,6 +320,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           {
             ...baseThread,
             id: activeThreadId,
+            rootThreadId: activeThreadId,
             latestTurn: {
               turnId: "turn-1" as TurnId,
               state: "running",
@@ -328,10 +333,12 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           {
             ...baseThread,
             id: idleThreadId,
+            rootThreadId: idleThreadId,
           },
           {
             ...baseThread,
             id: "thread-missing-project" as ThreadId,
+            rootThreadId: "thread-missing-project" as ThreadId,
             projectId: "missing-project" as ProjectId,
             latestTurn: {
               turnId: "turn-2" as TurnId,
@@ -431,6 +438,10 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           interactionMode: "default",
           branch: null,
           worktreePath: null,
+          parentThreadId: null,
+          origin: { kind: "user" as const },
+          rootThreadId: threadId,
+          depth: 0,
           latestTurn: {
             turnId: "turn-1" as TurnId,
             state: "running",
@@ -586,6 +597,10 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           interactionMode: "default",
           branch: null,
           worktreePath: null,
+          parentThreadId: null,
+          origin: { kind: "user" as const },
+          rootThreadId: threadId,
+          depth: 0,
           latestTurn: {
             turnId: "turn-1" as TurnId,
             state: "running",

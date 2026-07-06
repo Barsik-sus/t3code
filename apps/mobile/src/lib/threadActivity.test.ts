@@ -50,6 +50,10 @@ function makeThread(
     checkpoints: [],
     session: null,
     ...input,
+    parentThreadId: input.parentThreadId ?? null,
+    origin: input.origin ?? { kind: "user" as const },
+    rootThreadId: input.rootThreadId ?? input.id,
+    depth: input.depth ?? 0,
   };
 }
 
