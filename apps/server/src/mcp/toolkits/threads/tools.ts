@@ -139,7 +139,7 @@ const mutatingThreadTool = <T extends Tool.Any>(tool: T): T =>
 export const CreateChildThreadTool = mutatingThreadTool(
   Tool.make("create_child_thread", {
     description:
-      "Creates a direct sub-thread for this agent session, starts its first turn, and returns the sub-thread id and title.",
+      'Creates a direct sub-thread for this agent session, starts its first turn, and returns the sub-thread id and title. With notify "steer", a short factual message is delivered to this session when the sub-thread settles, blocks, or fails: queued into the running turn if one is live, otherwise starting a new turn on this session. With notify "none" (default), no message is delivered; sub-thread state remains readable via list_child_threads and wait_for_child_threads.',
     parameters: CreateChildThreadInput,
     success: CreateChildThreadResult,
     failure: ThreadToolError,

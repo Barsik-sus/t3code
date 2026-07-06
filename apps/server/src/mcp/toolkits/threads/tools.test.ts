@@ -31,7 +31,7 @@ it("describes only direct sub-thread capabilities", () => {
   const descriptions = tools.map((tool) => Tool.getDescription(tool));
 
   expect(descriptions).toEqual([
-    "Creates a direct sub-thread for this agent session, starts its first turn, and returns the sub-thread id and title.",
+    'Creates a direct sub-thread for this agent session, starts its first turn, and returns the sub-thread id and title. With notify "steer", a short factual message is delivered to this session when the sub-thread settles, blocks, or fails: queued into the running turn if one is live, otherwise starting a new turn on this session. With notify "none" (default), no message is delivered; sub-thread state remains readable via list_child_threads and wait_for_child_threads.',
     "Returns provider instances, models, model options, runtime modes, interaction modes, and this thread's default child-thread settings.",
     "Returns direct sub-threads created by this agent session with status, latest-turn state, pending-request counts, and timestamps.",
     "Long-polls direct sub-threads created by this agent session until watched sub-threads settle, become blocked, or the timeout elapses.",
