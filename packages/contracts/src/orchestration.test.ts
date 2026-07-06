@@ -11,12 +11,15 @@ import {
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
+  OrchestrationThread,
+  OrchestrationThreadShell,
   ProjectCreatedPayload,
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
   OrchestrationSession,
   ProjectCreateCommand,
   ThreadMetaUpdatedPayload,
+  ThreadArchivedPayload,
   ThreadTurnStartCommand,
   ThreadCreatedPayload,
   ThreadTurnDiff,
@@ -38,6 +41,9 @@ const decodeOrchestrationLatestTurn = Schema.decodeUnknownEffect(OrchestrationLa
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
 const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
+const decodeThreadArchivedPayload = Schema.decodeUnknownEffect(ThreadArchivedPayload);
+const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
+const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
@@ -309,6 +315,131 @@ it.effect("decodes thread.created runtime mode for historical events", () =>
 
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
     assert.strictEqual(parsed.modelSelection.instanceId, "codex");
+  }),
+);
+
+it.effect("decodes historical thread.created hierarchy fields as a root user thread", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadCreatedPayload({
+      threadId: "thread-compat-1",
+      projectId: "project-compat-1",
+      title: "Historical Thread",
+      modelSelection: {
+        provider: "codex",
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.parentThreadId, null);
+    assert.deepStrictEqual(parsed.origin, { kind: "user" });
+    assert.strictEqual(parsed.notify, "none");
+  }),
+);
+
+it.effect("decodes cached thread snapshots with hierarchy defaults", () =>
+  Effect.gen(function* () {
+    const baseThread = {
+      id: "thread-cache-1",
+      projectId: "project-cache-1",
+      title: "Cached Thread",
+      modelSelection: {
+        provider: "codex",
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+      session: null,
+    };
+
+    const thread = yield* decodeOrchestrationThread({
+      ...baseThread,
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+    });
+    const shell = yield* decodeOrchestrationThreadShell({
+      ...baseThread,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+    });
+
+    assert.strictEqual(thread.parentThreadId, null);
+    assert.deepStrictEqual(thread.origin, { kind: "user" });
+    assert.strictEqual(thread.rootThreadId, "thread-cache-1");
+    assert.strictEqual(thread.depth, 0);
+    assert.strictEqual(shell.parentThreadId, null);
+    assert.deepStrictEqual(shell.origin, { kind: "user" });
+    assert.strictEqual(shell.rootThreadId, "thread-cache-1");
+    assert.strictEqual(shell.depth, 0);
+  }),
+);
+
+it.effect("decodes historical thread.archived cascadedFrom as null", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadArchivedPayload({
+      threadId: "thread-archive-1",
+      archivedAt: "2026-01-01T01:00:00.000Z",
+      updatedAt: "2026-01-01T01:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.cascadedFrom, null);
+  }),
+);
+
+it.effect("round-trips fully populated child thread.created hierarchy fields", () =>
+  Effect.gen(function* () {
+    const decoded = yield* decodeThreadCreatedPayload({
+      threadId: "thread-child-1",
+      projectId: "project-child-1",
+      title: "Child Thread",
+      modelSelection: {
+        provider: "codex",
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "main",
+      worktreePath: "/tmp/project-child",
+      parentThreadId: "thread-parent-1",
+      origin: {
+        kind: "agent",
+        creatorThreadId: "thread-parent-1",
+        providerInstanceId: "codex",
+        providerSessionId: "session-1",
+        creatorTurnId: "turn-parent-1",
+      },
+      notify: "steer",
+      createdAt: "2026-01-01T02:00:00.000Z",
+      updatedAt: "2026-01-01T02:00:00.000Z",
+    });
+
+    const encoded = yield* encodeThreadCreatedPayload(decoded);
+    const roundTripped = yield* decodeThreadCreatedPayload(encoded);
+
+    assert.strictEqual(roundTripped.parentThreadId, "thread-parent-1");
+    assert.ok(roundTripped.origin !== undefined);
+    assert.strictEqual(roundTripped.origin.kind, "agent");
+    assert.strictEqual(roundTripped.origin.creatorThreadId, "thread-parent-1");
+    assert.strictEqual(roundTripped.origin.providerInstanceId, "codex");
+    assert.strictEqual(roundTripped.origin.providerSessionId, "session-1");
+    assert.strictEqual(roundTripped.origin.creatorTurnId, "turn-parent-1");
+    assert.strictEqual(roundTripped.notify, "steer");
   }),
 );
 

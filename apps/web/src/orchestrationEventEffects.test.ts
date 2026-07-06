@@ -55,6 +55,9 @@ describe("deriveOrchestrationBatchEffects", () => {
         interactionMode: "default",
         branch: null,
         worktreePath: null,
+        parentThreadId: null,
+        origin: { kind: "user" as const },
+        notify: "none",
         createdAt: "2026-02-27T00:00:00.000Z",
         updatedAt: "2026-02-27T00:00:00.000Z",
       }),
@@ -66,6 +69,7 @@ describe("deriveOrchestrationBatchEffects", () => {
         threadId: archivedThreadId,
         archivedAt: "2026-02-27T00:00:02.000Z",
         updatedAt: "2026-02-27T00:00:02.000Z",
+        cascadedFrom: null,
       }),
     ]);
 
@@ -92,6 +96,9 @@ describe("deriveOrchestrationBatchEffects", () => {
         interactionMode: "default",
         branch: null,
         worktreePath: null,
+        parentThreadId: null,
+        origin: { kind: "user" as const },
+        notify: "none",
         createdAt: "2026-02-27T00:00:02.000Z",
         updatedAt: "2026-02-27T00:00:02.000Z",
       }),
@@ -121,6 +128,7 @@ describe("deriveOrchestrationBatchEffects", () => {
         threadId,
         archivedAt: "2026-02-27T00:00:01.000Z",
         updatedAt: "2026-02-27T00:00:01.000Z",
+        cascadedFrom: null,
       }),
       makeEvent("thread.unarchived", {
         threadId,

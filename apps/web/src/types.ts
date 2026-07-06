@@ -9,6 +9,7 @@ import type {
   ProjectScript as ContractProjectScript,
   ProviderInteractionMode,
   RuntimeMode,
+  ThreadId,
 } from "@t3tools/contracts";
 import type {
   EnvironmentProject,
@@ -53,5 +54,9 @@ export interface ThreadTurnState {
   latestTurn: OrchestrationLatestTurn | null;
 }
 
-export type SidebarThreadSummary = EnvironmentThreadShell;
+export interface SidebarThreadSummary extends EnvironmentThreadShell {
+  readonly parentThreadId: ThreadId | null;
+  readonly rootThreadId: ThreadId;
+  readonly depth: number;
+}
 export type ThreadSession = OrchestrationSession;

@@ -593,7 +593,31 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadsProjection",
     )(function* (event, attachmentSideEffects) {
       switch (event.type) {
-        case "thread.created":
+        case "thread.created": {
+          const parentThreadId = event.payload.parentThreadId ?? null;
+          const origin = event.payload.origin ?? { kind: "user" as const };
+          const notifyMode = event.payload.notify ?? "none";
+          const hierarchy =
+            parentThreadId === null
+              ? {
+                  rootThreadId: event.payload.threadId,
+                  threadDepth: 0,
+                }
+              : yield* projectionThreadRepository.getById({ threadId: parentThreadId }).pipe(
+                  Effect.flatMap((parentRow) =>
+                    Option.isSome(parentRow)
+                      ? Effect.succeed({
+                          rootThreadId: parentRow.value.rootThreadId,
+                          threadDepth: parentRow.value.threadDepth + 1,
+                        })
+                      : Effect.die(
+                          new Error(
+                            `Cannot project child thread ${event.payload.threadId}: parent thread ${parentThreadId} is missing`,
+                          ),
+                        ),
+                  ),
+                );
+
           yield* projectionThreadRepository.upsert({
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
@@ -603,10 +627,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
+            parentThreadId,
+            rootThreadId: hierarchy.rootThreadId,
+            threadDepth: hierarchy.threadDepth,
+            origin,
+            notifyMode,
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
             archivedAt: null,
+            archivedCascadedFrom: null,
             latestUserMessageAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
@@ -614,6 +644,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             deletedAt: null,
           });
           return;
+        }
 
         case "thread.archived": {
           const existingRow = yield* projectionThreadRepository.getById({
@@ -625,6 +656,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             archivedAt: event.payload.archivedAt,
+            archivedCascadedFrom: event.payload.cascadedFrom ?? null,
             updatedAt: event.payload.updatedAt,
           });
           return;

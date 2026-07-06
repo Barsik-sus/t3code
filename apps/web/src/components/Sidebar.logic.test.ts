@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  buildSidebarThreadTree,
   createThreadJumpHintVisibilityController,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
@@ -8,6 +9,10 @@ import {
   getVisibleThreadsForProject,
   getProjectSortTimestamp,
   hasUnseenCompletion,
+  hasUnseenFailure,
+  sliceSidebarThreadTreeToPreview,
+  type SidebarThreadTreeNode,
+  type ThreadStatusPill,
   isContextMenuPointerDown,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
@@ -34,6 +39,7 @@ import {
   type Project,
   type Thread,
 } from "../types";
+import { useThreadSelectionStore } from "../threadSelectionStore";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 
@@ -835,6 +841,10 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     latestTurn: null,
     branch: null,
     worktreePath: null,
+    parentThreadId: null,
+    origin: { kind: "user" as const },
+    rootThreadId: ThreadId.make("thread-1"),
+    depth: 0,
     checkpoints: [],
     activities: [],
     ...overrides,
@@ -1064,5 +1074,379 @@ describe("sortProjectsForSidebar", () => {
     );
 
     expect(timestamp).toBe(Date.parse("2026-03-09T10:10:00.000Z"));
+  });
+});
+
+interface TreeThread {
+  id: ThreadId;
+  parentThreadId: ThreadId | null;
+}
+
+function treeThread(id: string, parentId: string | null): TreeThread {
+  return {
+    id: ThreadId.make(id),
+    parentThreadId: parentId === null ? null : ThreadId.make(parentId),
+  };
+}
+
+function expandedSet(...ids: string[]): ReadonlySet<ThreadId> {
+  return new Set(ids.map((id) => ThreadId.make(id)));
+}
+
+function orderedIds(nodes: ReadonlyArray<SidebarThreadTreeNode<TreeThread>>): string[] {
+  return nodes.map((node) => node.thread.id);
+}
+
+const WORKING_PILL: ThreadStatusPill = {
+  label: "Working",
+  colorClass: "",
+  dotClass: "",
+  pulse: true,
+};
+const COMPLETED_PILL: ThreadStatusPill = {
+  label: "Completed",
+  colorClass: "",
+  dotClass: "",
+  pulse: false,
+};
+const FAILED_PILL: ThreadStatusPill = {
+  label: "Failed",
+  colorClass: "",
+  dotClass: "",
+  pulse: false,
+};
+
+describe("buildSidebarThreadTree", () => {
+  it("flattens a child directly below its expanded parent with incremented depth", () => {
+    const nodes = buildSidebarThreadTree({
+      threads: [
+        treeThread("root-a", null),
+        treeThread("a-child", "root-a"),
+        treeThread("root-b", null),
+      ],
+      expandedThreadIds: expandedSet("root-a"),
+      pinnedThreadId: null,
+    });
+
+    expect(orderedIds(nodes)).toEqual(["root-a", "a-child", "root-b"]);
+    expect(nodes.map((node) => node.depth)).toEqual([0, 1, 0]);
+    expect(nodes[0]).toMatchObject({ hasChildren: true, isExpanded: true });
+    expect(nodes[1]).toMatchObject({ hasChildren: false, isExpanded: false });
+  });
+
+  it("hides descendants of a collapsed parent while keeping the disclosure state", () => {
+    const nodes = buildSidebarThreadTree({
+      threads: [
+        treeThread("root-a", null),
+        treeThread("a-child", "root-a"),
+        treeThread("root-b", null),
+      ],
+      expandedThreadIds: expandedSet(),
+      pinnedThreadId: null,
+    });
+
+    expect(orderedIds(nodes)).toEqual(["root-a", "root-b"]);
+    expect(nodes[0]).toMatchObject({ hasChildren: true, isExpanded: false });
+  });
+
+  it("renders orphans (parent absent) at root level rather than dropping them", () => {
+    const nodes = buildSidebarThreadTree({
+      threads: [treeThread("orphan", "deleted-parent"), treeThread("root-b", null)],
+      expandedThreadIds: expandedSet(),
+      pinnedThreadId: null,
+    });
+
+    expect(orderedIds(nodes)).toEqual(["orphan", "root-b"]);
+    expect(nodes[0]!.depth).toBe(0);
+  });
+
+  it("returns uncapped structural depth for deep chains", () => {
+    const nodes = buildSidebarThreadTree({
+      threads: [
+        treeThread("a", null),
+        treeThread("b", "a"),
+        treeThread("c", "b"),
+        treeThread("d", "c"),
+      ],
+      expandedThreadIds: expandedSet("a", "b", "c"),
+      pinnedThreadId: null,
+    });
+
+    expect(orderedIds(nodes)).toEqual(["a", "b", "c", "d"]);
+    expect(nodes.map((node) => node.depth)).toEqual([0, 1, 2, 3]);
+  });
+
+  it("bubbles a parent above other roots by its subtree's max sort position", () => {
+    // Input is sortThreads-ordered: the active child is newest (index 0), its
+    // parent is oldest (last). The parent must still bubble above `root-other`.
+    const threads = [
+      treeThread("child-c", "parent-p"),
+      treeThread("root-other", null),
+      treeThread("parent-p", null),
+    ];
+
+    const expanded = buildSidebarThreadTree({
+      threads,
+      expandedThreadIds: expandedSet("parent-p"),
+      pinnedThreadId: null,
+    });
+    expect(orderedIds(expanded)).toEqual(["parent-p", "child-c", "root-other"]);
+
+    const collapsed = buildSidebarThreadTree({
+      threads,
+      expandedThreadIds: expandedSet(),
+      pinnedThreadId: null,
+    });
+    expect(orderedIds(collapsed)).toEqual(["parent-p", "root-other"]);
+  });
+
+  it("keeps a pinned active descendant visible under a collapsed ancestor", () => {
+    const nodes = buildSidebarThreadTree({
+      threads: [
+        treeThread("parent-p", null),
+        treeThread("child-c", "parent-p"),
+        treeThread("grandchild-g", "child-c"),
+      ],
+      expandedThreadIds: expandedSet(),
+      pinnedThreadId: ThreadId.make("grandchild-g"),
+    });
+
+    expect(orderedIds(nodes)).toEqual(["parent-p", "grandchild-g"]);
+    // Surfaced at its true depth (2), not collapsed to the parent's level.
+    expect(nodes[1]!.depth).toBe(2);
+  });
+
+  it("rolls up the highest-priority subtree status, failed over completed", () => {
+    const statusById: Record<string, ThreadStatusPill | null> = {
+      "parent-p": null,
+      "child-completed": COMPLETED_PILL,
+      "child-failed": FAILED_PILL,
+    };
+    const nodes = buildSidebarThreadTree({
+      threads: [
+        treeThread("parent-p", null),
+        treeThread("child-completed", "parent-p"),
+        treeThread("child-failed", "parent-p"),
+      ],
+      expandedThreadIds: expandedSet(),
+      pinnedThreadId: null,
+      resolveStatus: (thread) => statusById[thread.id] ?? null,
+    });
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]!.subtreeStatus).toMatchObject({ label: "Failed" });
+  });
+
+  it("rolls a running descendant up over a completed sibling", () => {
+    const statusById: Record<string, ThreadStatusPill | null> = {
+      "parent-p": COMPLETED_PILL,
+      "child-working": WORKING_PILL,
+    };
+    const nodes = buildSidebarThreadTree({
+      threads: [treeThread("parent-p", null), treeThread("child-working", "parent-p")],
+      expandedThreadIds: expandedSet(),
+      pinnedThreadId: null,
+      resolveStatus: (thread) => statusById[thread.id] ?? null,
+    });
+
+    expect(nodes[0]!.subtreeStatus).toMatchObject({ label: "Working" });
+  });
+});
+
+describe("sliceSidebarThreadTreeToPreview", () => {
+  const threeRootsWithChild = [
+    treeThread("root-1", null),
+    treeThread("child-1", "root-1"),
+    treeThread("root-2", null),
+    treeThread("root-3", null),
+  ];
+
+  function buildNodes(pinnedThreadId: ThreadId | null = null) {
+    return buildSidebarThreadTree({
+      threads: threeRootsWithChild,
+      expandedThreadIds: expandedSet("root-1"),
+      pinnedThreadId,
+    });
+  }
+
+  it("counts roots only, so an expanded root's descendants do not consume budget", () => {
+    const { rendered, hidden, hasHiddenRoots } = sliceSidebarThreadTreeToPreview({
+      nodes: buildNodes(),
+      previewLimit: 2,
+      activeThreadId: null,
+      isExpanded: false,
+    });
+
+    expect(hasHiddenRoots).toBe(true);
+    // root-1 + child-1 + root-2 rendered (2 roots), root-3 hidden.
+    expect(orderedIds(rendered)).toEqual(["root-1", "child-1", "root-2"]);
+    expect(orderedIds(hidden)).toEqual(["root-3"]);
+  });
+
+  it("keeps the active thread's root block visible past the budget", () => {
+    const { rendered, hidden } = sliceSidebarThreadTreeToPreview({
+      nodes: buildNodes(),
+      previewLimit: 1,
+      activeThreadId: ThreadId.make("root-3"),
+      isExpanded: false,
+    });
+
+    expect(orderedIds(rendered)).toEqual(["root-1", "child-1", "root-3"]);
+    expect(orderedIds(hidden)).toEqual(["root-2"]);
+  });
+
+  it("renders everything when the thread list is expanded", () => {
+    const { rendered, hidden } = sliceSidebarThreadTreeToPreview({
+      nodes: buildNodes(),
+      previewLimit: 1,
+      activeThreadId: null,
+      isExpanded: true,
+    });
+
+    expect(orderedIds(rendered)).toEqual(["root-1", "child-1", "root-2", "root-3"]);
+    expect(hidden).toEqual([]);
+  });
+});
+
+describe("tree order feeds flat-order consumers", () => {
+  const threads = [
+    treeThread("parent-p", null),
+    treeThread("child-c", "parent-p"),
+    treeThread("root-other", null),
+  ];
+  const visibleKeys = orderedIds(
+    buildSidebarThreadTree({
+      threads,
+      expandedThreadIds: expandedSet("parent-p"),
+      pinnedThreadId: null,
+    }),
+  );
+
+  it("resolveAdjacentThreadId walks the flattened tree order", () => {
+    expect(visibleKeys).toEqual(["parent-p", "child-c", "root-other"]);
+    expect(
+      resolveAdjacentThreadId({
+        threadIds: visibleKeys,
+        currentThreadId: "parent-p",
+        direction: "next",
+      }),
+    ).toBe("child-c");
+    expect(
+      resolveAdjacentThreadId({
+        threadIds: visibleKeys,
+        currentThreadId: "root-other",
+        direction: "previous",
+      }),
+    ).toBe("child-c");
+  });
+
+  it("range selection over the flattened tree order includes nested rows", () => {
+    const store = useThreadSelectionStore.getState();
+    store.clearSelection();
+    store.setAnchor("parent-p");
+    useThreadSelectionStore.getState().rangeSelectTo("root-other", visibleKeys);
+
+    expect([...useThreadSelectionStore.getState().selectedThreadKeys]).toEqual([
+      "parent-p",
+      "child-c",
+      "root-other",
+    ]);
+    useThreadSelectionStore.getState().clearSelection();
+  });
+});
+
+describe("hasUnseenFailure", () => {
+  const erroredTurn: OrchestrationLatestTurn = { ...makeLatestTurn(), state: "error" };
+
+  it("returns true when a turn errored after the last visit", () => {
+    expect(
+      hasUnseenFailure({
+        hasActionableProposedPlan: false,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        interactionMode: "default",
+        latestTurn: erroredTurn,
+        lastVisitedAt: "2026-03-09T10:04:00.000Z",
+        session: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false once the failed thread has been visited", () => {
+    expect(
+      hasUnseenFailure({
+        hasActionableProposedPlan: false,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        interactionMode: "default",
+        latestTurn: erroredTurn,
+        lastVisitedAt: "2026-03-09T10:06:00.000Z",
+        session: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for a non-error latest turn", () => {
+    expect(
+      hasUnseenFailure({
+        hasActionableProposedPlan: false,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        interactionMode: "default",
+        latestTurn: makeLatestTurn(),
+        lastVisitedAt: "2026-03-09T10:04:00.000Z",
+        session: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("resolveThreadStatusPill failed state", () => {
+  const settledErrorThread = {
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default" as const,
+    latestTurn: { ...makeLatestTurn(), state: "error" as const },
+    lastVisitedAt: "2026-03-09T10:04:00.000Z",
+    session: {
+      threadId: ThreadId.make("thread-1"),
+      status: "ready" as const,
+      providerName: "Codex",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: "2026-03-09T10:00:00.000Z",
+    },
+  };
+
+  it("shows Failed for an unseen errored turn", () => {
+    expect(resolveThreadStatusPill({ thread: settledErrorThread })).toMatchObject({
+      label: "Failed",
+      pulse: false,
+    });
+  });
+
+  it("ranks Pending Approval above Failed", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...settledErrorThread, hasPendingApprovals: true },
+      }),
+    ).toMatchObject({ label: "Pending Approval" });
+  });
+
+  it("ranks Failed above Awaiting Input", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...settledErrorThread, hasPendingUserInput: true },
+      }),
+    ).toMatchObject({ label: "Failed" });
+  });
+
+  it("rolls Failed up over Completed via resolveProjectStatusIndicator", () => {
+    expect(resolveProjectStatusIndicator([COMPLETED_PILL, FAILED_PILL])).toMatchObject({
+      label: "Failed",
+    });
   });
 });

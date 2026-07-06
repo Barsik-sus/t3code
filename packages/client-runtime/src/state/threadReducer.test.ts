@@ -30,6 +30,10 @@ const baseThread: OrchestrationThread = {
   interactionMode: "default",
   branch: null,
   worktreePath: null,
+  parentThreadId: null,
+  origin: { kind: "user" as const },
+  rootThreadId: ThreadId.make("thread-1"),
+  depth: 0,
   latestTurn: null,
   createdAt: "2026-04-01T00:00:00.000Z",
   updatedAt: "2026-04-01T00:00:00.000Z",
@@ -86,6 +90,15 @@ describe("applyThreadDetailEvent", () => {
           interactionMode: "default",
           branch: "main",
           worktreePath: null,
+          parentThreadId: ThreadId.make("thread-1"),
+          origin: {
+            kind: "agent",
+            creatorThreadId: ThreadId.make("thread-1"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            providerSessionId: "session-1",
+            creatorTurnId: TurnId.make("turn-1"),
+          },
+          notify: "steer",
           createdAt: "2026-04-01T01:00:00.000Z",
           updatedAt: "2026-04-01T01:00:00.000Z",
         },
@@ -96,6 +109,14 @@ describe("applyThreadDetailEvent", () => {
         expect(result.thread.id).toBe("thread-2");
         expect(result.thread.title).toBe("New Thread");
         expect(result.thread.branch).toBe("main");
+        expect(result.thread.parentThreadId).toBe("thread-1");
+        expect(result.thread.origin).toEqual({
+          kind: "agent",
+          creatorThreadId: "thread-1",
+          providerInstanceId: "codex",
+          providerSessionId: "session-1",
+          creatorTurnId: "turn-1",
+        });
         expect(result.thread.messages).toEqual([]);
         expect(result.thread.session).toBeNull();
       }
@@ -133,6 +154,7 @@ describe("applyThreadDetailEvent", () => {
           threadId: ThreadId.make("thread-1"),
           archivedAt: "2026-04-01T03:00:00.000Z",
           updatedAt: "2026-04-01T03:00:00.000Z",
+          cascadedFrom: null,
         },
       });
 

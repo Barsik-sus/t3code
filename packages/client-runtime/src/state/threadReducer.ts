@@ -68,6 +68,14 @@ export function applyThreadDetailEvent(
           interactionMode: event.payload.interactionMode,
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
+          parentThreadId: event.payload.parentThreadId ?? null,
+          origin: event.payload.origin ?? { kind: "user" },
+          // The event carries no denormalized tree data and this reducer has no
+          // access to the parent thread, so root/depth are approximations that
+          // are wrong for depth >= 2. Server snapshots and shell refetches are
+          // authoritative; do not derive tree structure from these two fields.
+          rootThreadId: event.payload.parentThreadId ?? event.payload.threadId,
+          depth: event.payload.parentThreadId == null ? 0 : 1,
           latestTurn: null,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,

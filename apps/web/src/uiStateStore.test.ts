@@ -23,6 +23,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     projectOrder: [],
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
+    threadExpandedById: {},
     defaultAdvertisedEndpointKey: null,
     ...overrides,
   };
@@ -177,6 +178,7 @@ describe("parsePersistedState", () => {
           "turn-1": false,
         },
       },
+      threadExpandedById: {},
     });
   });
 
@@ -283,6 +285,7 @@ describe("uiStateStore persistence", () => {
           "turn-1": false,
         },
       },
+      threadExpandedById: {},
     });
     expect(parsePersistedState(persisted)).toEqual({
       ...state,

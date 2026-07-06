@@ -85,6 +85,8 @@ export interface WorkLogEntry {
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  /** Thread referenced by this entry (from `thread.child.*` activity payloads); rows render a link to it. */
+  linkedThreadId?: ThreadId;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -803,6 +805,13 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (toolLifecycleStatus) {
     entry.toolLifecycleStatus = toolLifecycleStatus;
+  }
+  if (
+    activity.kind.startsWith("thread.child.") &&
+    typeof payload?.childThreadId === "string" &&
+    payload.childThreadId.length > 0
+  ) {
+    entry.linkedThreadId = payload.childThreadId as ThreadId;
   }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {

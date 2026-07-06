@@ -138,6 +138,37 @@ export type ProviderApprovalDecision = typeof ProviderApprovalDecision.Type;
 export const ProviderUserInputAnswers = Schema.Record(Schema.String, Schema.Unknown);
 export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 
+// Persisted subset of McpInvocationScope + user/system marker.
+export const ThreadOrigin = Schema.Struct({
+  kind: Schema.Literals(["user", "agent", "system"]),
+  creatorThreadId: Schema.optional(ThreadId),
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+  providerSessionId: Schema.optional(Schema.String),
+  creatorTurnId: Schema.optional(TurnId),
+});
+export type ThreadOrigin = typeof ThreadOrigin.Type;
+
+export const ChildNotifyMode = Schema.Literals(["none", "steer"]);
+export type ChildNotifyMode = typeof ChildNotifyMode.Type;
+
+const defaultThreadOrigin: ThreadOrigin = { kind: "user" };
+
+const ThreadOriginWithDefault = ThreadOrigin.pipe(
+  Schema.withDecodingDefault(Effect.succeed(defaultThreadOrigin)),
+);
+const OptionalThreadOriginWithDefault = ThreadOrigin.pipe(
+  Schema.optional,
+  Schema.withDecodingDefault(Effect.succeed(defaultThreadOrigin)),
+);
+const OptionalChildNotifyModeWithDefault = ChildNotifyMode.pipe(
+  Schema.optional,
+  Schema.withDecodingDefault(Effect.succeed("none" as const)),
+);
+const OptionalNullThreadIdWithDefault = Schema.NullOr(ThreadId).pipe(
+  Schema.optional,
+  Schema.withDecodingDefault(Effect.succeed(null)),
+);
+
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -341,7 +372,7 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
-export const OrchestrationThread = Schema.Struct({
+const OrchestrationThreadFields = {
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -352,10 +383,14 @@ export const OrchestrationThread = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  parentThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  origin: ThreadOriginWithDefault,
+  depth: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  archivedCascadedFrom: Schema.optional(Schema.NullOr(ThreadId)),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
@@ -364,7 +399,30 @@ export const OrchestrationThread = Schema.Struct({
   activities: Schema.Array(OrchestrationThreadActivity),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
+} as const;
+
+const OrchestrationThreadSource = Schema.Struct({
+  ...OrchestrationThreadFields,
+  rootThreadId: Schema.optional(ThreadId),
 });
+const OrchestrationThreadWire = Schema.Struct({
+  ...OrchestrationThreadFields,
+  rootThreadId: ThreadId,
+});
+
+export const OrchestrationThread = OrchestrationThreadSource.pipe(
+  Schema.decodeTo(
+    OrchestrationThreadWire,
+    SchemaTransformation.transformOrFail({
+      decode: (raw) =>
+        Effect.succeed({
+          ...raw,
+          rootThreadId: raw.rootThreadId ?? raw.id,
+        } as typeof OrchestrationThreadWire.Encoded),
+      encode: (value) => Effect.succeed(value as typeof OrchestrationThreadSource.Type),
+    }),
+  ),
+);
 export type OrchestrationThread = typeof OrchestrationThread.Type;
 
 export const OrchestrationReadModel = Schema.Struct({
@@ -387,7 +445,7 @@ export const OrchestrationProjectShell = Schema.Struct({
 });
 export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 
-export const OrchestrationThreadShell = Schema.Struct({
+const OrchestrationThreadShellFields = {
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -398,6 +456,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  parentThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  origin: ThreadOriginWithDefault,
+  depth: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -407,7 +468,30 @@ export const OrchestrationThreadShell = Schema.Struct({
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
+} as const;
+
+const OrchestrationThreadShellSource = Schema.Struct({
+  ...OrchestrationThreadShellFields,
+  rootThreadId: Schema.optional(ThreadId),
 });
+const OrchestrationThreadShellWire = Schema.Struct({
+  ...OrchestrationThreadShellFields,
+  rootThreadId: ThreadId,
+});
+
+export const OrchestrationThreadShell = OrchestrationThreadShellSource.pipe(
+  Schema.decodeTo(
+    OrchestrationThreadShellWire,
+    SchemaTransformation.transformOrFail({
+      decode: (raw) =>
+        Effect.succeed({
+          ...raw,
+          rootThreadId: raw.rootThreadId ?? raw.id,
+        } as typeof OrchestrationThreadShellWire.Encoded),
+      encode: (value) => Effect.succeed(value as typeof OrchestrationThreadShellSource.Type),
+    }),
+  ),
+);
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 
 export const OrchestrationShellSnapshot = Schema.Struct({
@@ -524,6 +608,9 @@ const ThreadCreateCommand = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  parentThreadId: OptionalNullThreadIdWithDefault,
+  origin: OptionalThreadOriginWithDefault,
+  notify: OptionalChildNotifyModeWithDefault,
   createdAt: IsoDateTime,
 });
 
@@ -868,6 +955,9 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  parentThreadId: OptionalNullThreadIdWithDefault,
+  origin: OptionalThreadOriginWithDefault,
+  notify: OptionalChildNotifyModeWithDefault,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -881,6 +971,7 @@ export const ThreadArchivedPayload = Schema.Struct({
   threadId: ThreadId,
   archivedAt: IsoDateTime,
   updatedAt: IsoDateTime,
+  cascadedFrom: OptionalNullThreadIdWithDefault,
 });
 
 export const ThreadUnarchivedPayload = Schema.Struct({

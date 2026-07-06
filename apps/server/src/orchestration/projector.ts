@@ -271,6 +271,26 @@ export function projectEvent(
           event.type,
           "payload",
         );
+        const parentThread: OrchestrationThread | undefined =
+          payload.parentThreadId === null
+            ? undefined
+            : nextBase.threads.find((entry) => entry.id === payload.parentThreadId);
+        const hierarchy =
+          payload.parentThreadId === null
+            ? {
+                rootThreadId: payload.threadId,
+                depth: 0,
+              }
+            : parentThread === undefined
+              ? yield* Effect.die(
+                  new Error(
+                    `Cannot project child thread ${payload.threadId}: parent thread ${payload.parentThreadId} is missing`,
+                  ),
+                )
+              : {
+                  rootThreadId: parentThread.rootThreadId,
+                  depth: parentThread.depth + 1,
+                };
         const thread: OrchestrationThread = yield* decodeForEvent(
           OrchestrationThread,
           {
@@ -282,6 +302,10 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
+            parentThreadId: payload.parentThreadId,
+            origin: payload.origin,
+            rootThreadId: hierarchy.rootThreadId,
+            depth: hierarchy.depth,
             latestTurn: null,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -321,6 +345,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: payload.archivedAt,
+            archivedCascadedFrom: payload.cascadedFrom,
             updatedAt: payload.updatedAt,
           }),
         })),
@@ -332,6 +357,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: null,
+            archivedCascadedFrom: null,
             updatedAt: payload.updatedAt,
           }),
         })),

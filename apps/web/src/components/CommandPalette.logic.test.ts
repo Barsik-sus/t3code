@@ -29,6 +29,10 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     latestTurn: null,
     branch: null,
     worktreePath: null,
+    parentThreadId: null,
+    origin: { kind: "user" as const },
+    rootThreadId: ThreadId.make("thread-1"),
+    depth: 0,
     checkpoints: [],
     activities: [],
     ...overrides,
@@ -70,6 +74,67 @@ describe("buildThreadActionItems", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("labels sub-thread results with their ancestry path and matches ancestor titles", () => {
+    const items = buildThreadActionItems({
+      threads: [
+        makeThread({
+          id: ThreadId.make("thread-root"),
+          title: "Root task",
+          updatedAt: "2026-03-24T12:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("thread-child"),
+          title: "Child task",
+          parentThreadId: ThreadId.make("thread-root"),
+          updatedAt: "2026-03-23T12:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("thread-grandchild"),
+          title: "Grandchild task",
+          parentThreadId: ThreadId.make("thread-child"),
+          updatedAt: "2026-03-22T12:00:00.000Z",
+        }),
+      ],
+      projectTitleById: new Map([[PROJECT_ID, "Project"]]),
+      sortOrder: "updated_at",
+      icon: null,
+      runThread: async (_thread) => undefined,
+    });
+
+    const grandchild = items.find((item) => item.value === "thread:thread-grandchild");
+    expect(grandchild?.description).toBe("Project · Root task › Child task › Grandchild task");
+    expect(grandchild?.searchTerms).toContain("Root task");
+
+    const root = items.find((item) => item.value === "thread:thread-root");
+    expect(root?.description).toBe("Project");
+  });
+
+  it("keeps a sub-thread's ancestry path when its parent is archived", () => {
+    const items = buildThreadActionItems({
+      threads: [
+        makeThread({
+          id: ThreadId.make("thread-root"),
+          title: "Root task",
+          archivedAt: "2026-03-24T13:00:00.000Z",
+          updatedAt: "2026-03-24T12:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("thread-child"),
+          title: "Child task",
+          parentThreadId: ThreadId.make("thread-root"),
+          updatedAt: "2026-03-23T12:00:00.000Z",
+        }),
+      ],
+      projectTitleById: new Map([[PROJECT_ID, "Project"]]),
+      sortOrder: "updated_at",
+      icon: null,
+      runThread: async (_thread) => undefined,
+    });
+
+    expect(items.map((item) => item.value)).toEqual(["thread:thread-child"]);
+    expect(items[0]?.description).toBe("Project · Root task › Child task");
   });
 
   it("ranks thread title matches ahead of contextual project-name matches", () => {

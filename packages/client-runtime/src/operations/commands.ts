@@ -31,7 +31,9 @@ type CommandInput<T extends CommandType> = Omit<
 export type CreateProjectInput = CommandInput<"project.create">;
 export type UpdateProjectInput = CommandInput<"project.meta.update">;
 export type DeleteProjectInput = CommandInput<"project.delete">;
-export type CreateThreadInput = CommandInput<"thread.create">;
+type CreateThreadDefaultedField = "parentThreadId" | "origin" | "notify";
+export type CreateThreadInput = Omit<CommandInput<"thread.create">, CreateThreadDefaultedField> &
+  Partial<Pick<CommandInput<"thread.create">, CreateThreadDefaultedField>>;
 export type DeleteThreadInput = CommandInput<"thread.delete">;
 export type ArchiveThreadInput = CommandInput<"thread.archive">;
 export type UnarchiveThreadInput = CommandInput<"thread.unarchive">;
@@ -119,6 +121,9 @@ export const createThread: (input: CreateThreadInput) => CommandEffect = Effect.
     ...input,
     type: "thread.create",
     commandId: metadata.commandId,
+    parentThreadId: input.parentThreadId ?? null,
+    origin: input.origin ?? { kind: "user" },
+    notify: input.notify ?? "none",
     createdAt: metadata.createdAt,
   });
 });
