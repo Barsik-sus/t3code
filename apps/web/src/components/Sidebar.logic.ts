@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { ThreadId } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import {
   getThreadSortTimestamp,
@@ -31,6 +32,7 @@ export interface ThreadStatusPill {
     | "Working"
     | "Connecting"
     | "Completed"
+    | "Failed"
     | "Pending Approval"
     | "Awaiting Input"
     | "Plan Ready";
@@ -40,7 +42,8 @@ export interface ThreadStatusPill {
 }
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
-  "Pending Approval": 5,
+  "Pending Approval": 6,
+  Failed: 5,
   "Awaiting Input": 4,
   Working: 3,
   Connecting: 3,
@@ -154,6 +157,21 @@ export function useThreadJumpHintVisibility(): {
 
 export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   if (!thread.latestTurn?.completedAt) return false;
+  const completedAt = Date.parse(thread.latestTurn.completedAt);
+  if (Number.isNaN(completedAt)) return false;
+  if (!thread.lastVisitedAt) return false;
+
+  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
+  if (Number.isNaN(lastVisitedAt)) return true;
+  return completedAt > lastVisitedAt;
+}
+
+// A failed thread is one whose latest turn settled to `error` and that the user
+// has not opened since (same recency contract as `hasUnseenCompletion`). Once the
+// user visits the thread the failure stops surfacing as a pill.
+export function hasUnseenFailure(thread: ThreadStatusInput): boolean {
+  if (thread.latestTurn?.state !== "error") return false;
+  if (!thread.latestTurn.completedAt) return false;
   const completedAt = Date.parse(thread.latestTurn.completedAt);
   if (Number.isNaN(completedAt)) return false;
   if (!thread.lastVisitedAt) return false;
@@ -371,6 +389,15 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  if (hasUnseenFailure(thread)) {
+    return {
+      label: "Failed",
+      colorClass: "text-destructive",
+      dotClass: "bg-destructive",
+      pulse: false,
+    };
+  }
+
   if (thread.hasPendingUserInput) {
     return {
       label: "Awaiting Input",
@@ -440,6 +467,276 @@ export function resolveProjectStatusIndicator(
   }
 
   return highestPriorityStatus;
+}
+
+export interface SidebarThreadTreeNode<TThread> {
+  thread: TThread;
+  /** Structural depth (root = 0). Rendering caps the *indent* at 3; this value is uncapped. */
+  depth: number;
+  hasChildren: boolean;
+  isExpanded: boolean;
+  /**
+   * Highest-priority status across this node's whole subtree (itself + descendants).
+   * A collapsed parent renders this rollup instead of its own pill. `null` when
+   * `resolveStatus` is omitted or nothing in the subtree has a status.
+   */
+  subtreeStatus: ThreadStatusPill | null;
+}
+
+/**
+ * Flattens sorted threads into the single visible row order consumed by rendering
+ * AND every flat-order consumer (orderedProjectThreadKeys, visibleSidebarThreadKeys,
+ * rangeSelectTo, resolveAdjacentThreadId, Cmd+1..9 jumps).
+ *
+ * Tree structure is derived ONLY from `parentThreadId` (server-authoritative). A
+ * thread whose parent is not present in `threads` (deleted / archived / filtered
+ * out) is an orphan and renders at root level rather than disappearing.
+ *
+ * `threads` must already be `sortThreads()`-ordered. That ordering is a total order
+ * by sort timestamp, so a thread's input index is a faithful proxy for its
+ * timestamp: siblings keep their `sortThreads` order, and a parent's effective sort
+ * key is the minimum input index across its subtree (= the subtree's max timestamp).
+ * An active child therefore bubbles its whole ancestor chain up the list.
+ *
+ * `resolveStatus` is the only addition to the documented contract: `subtreeStatus`
+ * is a rollup of per-thread status pills, which cannot be derived from
+ * `{ id, parentThreadId }` alone. Callers that only care about order omit it.
+ */
+export function buildSidebarThreadTree<
+  TThread extends { id: ThreadId; parentThreadId: ThreadId | null },
+>(input: {
+  threads: readonly TThread[];
+  expandedThreadIds: ReadonlySet<ThreadId>;
+  pinnedThreadId: ThreadId | null;
+  resolveStatus?: (thread: TThread) => ThreadStatusPill | null;
+}): Array<SidebarThreadTreeNode<TThread>> {
+  const { expandedThreadIds, pinnedThreadId, threads } = input;
+  const resolveStatus = input.resolveStatus ?? (() => null);
+
+  const byId = new Map<ThreadId, TThread>();
+  const inputIndex = new Map<ThreadId, number>();
+  threads.forEach((thread, index) => {
+    byId.set(thread.id, thread);
+    inputIndex.set(thread.id, index);
+  });
+
+  // Orphans (parent missing) are grouped under the root bucket (key `null`).
+  const effectiveParentId = (thread: TThread): ThreadId | null =>
+    thread.parentThreadId !== null && byId.has(thread.parentThreadId)
+      ? thread.parentThreadId
+      : null;
+
+  const childrenByParent = new Map<ThreadId | null, TThread[]>();
+  for (const thread of threads) {
+    const key = effectiveParentId(thread);
+    const bucket = childrenByParent.get(key);
+    if (bucket) bucket.push(thread);
+    else childrenByParent.set(key, [thread]);
+  }
+
+  const childrenOf = (id: ThreadId | null): readonly TThread[] => childrenByParent.get(id) ?? [];
+
+  // Subtree-min input index = subtree-max sort timestamp (see doc comment).
+  const subtreeMinIndex = new Map<ThreadId, number>();
+  const computeMinIndex = (thread: TThread): number => {
+    let min = inputIndex.get(thread.id) ?? Number.POSITIVE_INFINITY;
+    for (const child of childrenOf(thread.id)) {
+      min = Math.min(min, computeMinIndex(child));
+    }
+    subtreeMinIndex.set(thread.id, min);
+    return min;
+  };
+  for (const root of childrenOf(null)) computeMinIndex(root);
+
+  const sortSiblings = (siblings: readonly TThread[]): TThread[] =>
+    [...siblings].sort(
+      (left, right) => (subtreeMinIndex.get(left.id) ?? 0) - (subtreeMinIndex.get(right.id) ?? 0),
+    );
+
+  // Subtree status rollup (self + descendants), highest priority wins.
+  const subtreeStatus = new Map<ThreadId, ThreadStatusPill | null>();
+  const computeStatus = (thread: TThread): ThreadStatusPill | null => {
+    const statuses: Array<ThreadStatusPill | null> = [resolveStatus(thread)];
+    for (const child of childrenOf(thread.id)) statuses.push(computeStatus(child));
+    const rolled = resolveProjectStatusIndicator(statuses);
+    subtreeStatus.set(thread.id, rolled);
+    return rolled;
+  };
+  for (const root of childrenOf(null)) computeStatus(root);
+
+  const depthById = new Map<ThreadId, number>();
+  const depthOf = (id: ThreadId): number => {
+    const cached = depthById.get(id);
+    if (cached !== undefined) return cached;
+    const thread = byId.get(id);
+    const parentId = thread ? effectiveParentId(thread) : null;
+    const depth = parentId === null ? 0 : depthOf(parentId) + 1;
+    depthById.set(id, depth);
+    return depth;
+  };
+
+  const isDescendantOf = (ancestorId: ThreadId, candidateId: ThreadId): boolean => {
+    let cursor = byId.get(candidateId);
+    while (cursor) {
+      const parentId = effectiveParentId(cursor);
+      if (parentId === null) return false;
+      if (parentId === ancestorId) return true;
+      cursor = byId.get(parentId);
+    }
+    return false;
+  };
+
+  const output: Array<SidebarThreadTreeNode<TThread>> = [];
+  const emitted = new Set<ThreadId>();
+
+  const toNode = (
+    thread: TThread,
+    depth: number,
+    hasChildren: boolean,
+    isExpanded: boolean,
+  ): SidebarThreadTreeNode<TThread> => ({
+    thread,
+    depth,
+    hasChildren,
+    isExpanded,
+    subtreeStatus: subtreeStatus.get(thread.id) ?? null,
+  });
+
+  const walk = (thread: TThread, depth: number): void => {
+    const children = sortSiblings(childrenOf(thread.id));
+    const hasChildren = children.length > 0;
+    const isExpanded = hasChildren && expandedThreadIds.has(thread.id);
+    output.push(toNode(thread, depth, hasChildren, isExpanded));
+    emitted.add(thread.id);
+
+    if (isExpanded) {
+      for (const child of children) walk(child, depth + 1);
+      return;
+    }
+    // Collapsed: keep the pinned (active) thread visible even under a collapsed
+    // ancestor, surfaced once as a lone row at its true depth.
+    if (
+      hasChildren &&
+      pinnedThreadId !== null &&
+      !emitted.has(pinnedThreadId) &&
+      isDescendantOf(thread.id, pinnedThreadId)
+    ) {
+      const pinned = byId.get(pinnedThreadId);
+      if (pinned) {
+        const pinnedHasChildren = childrenOf(pinnedThreadId).length > 0;
+        output.push(toNode(pinned, depthOf(pinnedThreadId), pinnedHasChildren, false));
+        emitted.add(pinnedThreadId);
+      }
+    }
+  };
+
+  for (const root of sortSiblings(childrenOf(null))) walk(root, 0);
+  return output;
+}
+
+/**
+ * Roots-only preview slicing over a flattened tree. Counts root nodes only; an
+ * expanded root shows all its descendants regardless of the budget. The block
+ * containing the active thread is always kept even when it falls past the budget.
+ */
+export function sliceSidebarThreadTreeToPreview<TThread extends { id: ThreadId }>(input: {
+  nodes: ReadonlyArray<SidebarThreadTreeNode<TThread>>;
+  previewLimit: number;
+  activeThreadId: ThreadId | null;
+  isExpanded: boolean;
+}): {
+  rendered: Array<SidebarThreadTreeNode<TThread>>;
+  hidden: Array<SidebarThreadTreeNode<TThread>>;
+  hasHiddenRoots: boolean;
+} {
+  const { activeThreadId, isExpanded, nodes, previewLimit } = input;
+
+  // Group into root-blocks: a depth-0 node plus every following node until the
+  // next depth-0 node (its rendered descendants + any surfaced pinned row).
+  const blocks: Array<Array<SidebarThreadTreeNode<TThread>>> = [];
+  for (const node of nodes) {
+    if (node.depth === 0 || blocks.length === 0) {
+      blocks.push([node]);
+    } else {
+      blocks[blocks.length - 1]!.push(node);
+    }
+  }
+
+  const rootCount = blocks.length;
+  const hasHiddenRoots = rootCount > previewLimit;
+  if (isExpanded || !hasHiddenRoots) {
+    return { rendered: [...nodes], hidden: [], hasHiddenRoots };
+  }
+
+  const rendered: Array<SidebarThreadTreeNode<TThread>> = [];
+  const hidden: Array<SidebarThreadTreeNode<TThread>> = [];
+  blocks.forEach((block, index) => {
+    const withinBudget = index < previewLimit;
+    const containsActive =
+      activeThreadId !== null && block.some((node) => node.thread.id === activeThreadId);
+    if (withinBudget || containsActive) {
+      rendered.push(...block);
+    } else {
+      hidden.push(...block);
+    }
+  });
+
+  return { rendered, hidden, hasHiddenRoots };
+}
+
+/**
+ * The single source of truth for a project's rendered thread rows: flattens the
+ * sub-thread tree, then applies roots-only preview slicing. Both the render path
+ * (`orderedProjectThreadKeys` / rows) and the global flat-order path
+ * (`visibleSidebarThreadKeys`) call this so their orders can never diverge.
+ *
+ * `sortedThreads` must be `sortThreads()`-ordered and already filtered to the
+ * project's non-archived threads. Thread disclosure defaults to expanded; only
+ * threads explicitly collapsed in `threadExpandedById` hide their descendants.
+ */
+export function buildRenderedProjectThreadTree<
+  TThread extends { id: ThreadId; parentThreadId: ThreadId | null },
+>(input: {
+  sortedThreads: readonly TThread[];
+  threadExpandedById: Readonly<Record<string, boolean>>;
+  activeThreadId: ThreadId | null;
+  previewLimit: number;
+  isThreadListExpanded: boolean;
+  resolveStatus?: (thread: TThread) => ThreadStatusPill | null;
+}): {
+  rendered: Array<SidebarThreadTreeNode<TThread>>;
+  hidden: Array<SidebarThreadTreeNode<TThread>>;
+  hasHiddenRoots: boolean;
+} {
+  const {
+    activeThreadId,
+    isThreadListExpanded,
+    previewLimit,
+    resolveStatus,
+    sortedThreads,
+    threadExpandedById,
+  } = input;
+
+  const expandedThreadIds = new Set<ThreadId>();
+  for (const thread of sortedThreads) {
+    if (threadExpandedById[thread.id] ?? true) {
+      expandedThreadIds.add(thread.id);
+    }
+  }
+
+  const nodes = buildSidebarThreadTree({
+    threads: sortedThreads,
+    expandedThreadIds,
+    pinnedThreadId: activeThreadId,
+    ...(resolveStatus ? { resolveStatus } : {}),
+  });
+
+  return sliceSidebarThreadTreeToPreview({
+    nodes,
+    previewLimit,
+    activeThreadId,
+    isExpanded: isThreadListExpanded,
+  });
 }
 
 export function getVisibleThreadsForProject<T extends Pick<Thread, "id">>(input: {

@@ -25,6 +25,7 @@ export interface PersistedUiState {
   projectOrderCwds?: string[];
   defaultAdvertisedEndpointKey?: string | null;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
+  threadExpandedById?: Record<string, boolean>;
 }
 
 export interface UiProjectState {
@@ -35,6 +36,9 @@ export interface UiProjectState {
 export interface UiThreadState {
   threadLastVisitedAtById: Record<string, string>;
   threadChangedFilesExpandedById: Record<string, Record<string, boolean>>;
+  // Sub-thread tree disclosure. Absent = expanded (default); only explicit
+  // collapses are stored, mirroring how projects default to expanded.
+  threadExpandedById: Record<string, boolean>;
 }
 
 export interface UiEndpointState {
@@ -48,6 +52,7 @@ const initialState: UiState = {
   projectOrder: [],
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
+  threadExpandedById: {},
   defaultAdvertisedEndpointKey: null,
 };
 
@@ -127,6 +132,7 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
     threadChangedFilesExpandedById: sanitizePersistedThreadChangedFilesExpanded(
       parsed.threadChangedFilesExpandedById,
     ),
+    threadExpandedById: sanitizeBooleanRecord(parsed.threadExpandedById),
     defaultAdvertisedEndpointKey:
       typeof parsed.defaultAdvertisedEndpointKey === "string" &&
       parsed.defaultAdvertisedEndpointKey.length > 0
@@ -203,6 +209,9 @@ export function persistState(state: UiState): void {
         return Object.keys(nextTurns).length > 0 ? [[threadId, nextTurns]] : [];
       }),
     );
+    const threadExpandedById = Object.fromEntries(
+      Object.entries(state.threadExpandedById).filter(([, expanded]) => expanded === false),
+    );
     window.localStorage.setItem(
       PERSISTED_STATE_KEY,
       JSON.stringify({
@@ -211,6 +220,7 @@ export function persistState(state: UiState): void {
         threadLastVisitedAtById: state.threadLastVisitedAtById,
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         threadChangedFilesExpandedById,
+        threadExpandedById,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -367,6 +377,30 @@ export function setProjectExpanded(
   };
 }
 
+export function resolveThreadExpanded(
+  threadExpandedById: Readonly<Record<string, boolean>>,
+  threadId: string,
+): boolean {
+  return threadExpandedById[threadId] ?? true;
+}
+
+export function setThreadExpanded(state: UiState, threadId: string, expanded: boolean): UiState {
+  if (resolveThreadExpanded(state.threadExpandedById, threadId) === expanded) {
+    return state;
+  }
+  const threadExpandedById = { ...state.threadExpandedById };
+  if (expanded) {
+    // Expanded is the default; drop the entry instead of storing `true`.
+    delete threadExpandedById[threadId];
+  } else {
+    threadExpandedById[threadId] = false;
+  }
+  return {
+    ...state,
+    threadExpandedById,
+  };
+}
+
 export function reorderProjects(
   state: UiState,
   currentProjectOrder: readonly string[],
@@ -417,6 +451,7 @@ interface UiStateStore extends UiState {
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
+  setThreadExpanded: (threadId: string, expanded: boolean) => void;
   reorderProjects: (
     currentProjectOrder: readonly string[],
     draggedProjectIds: readonly string[],
@@ -436,6 +471,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),
+  setThreadExpanded: (threadId, expanded) =>
+    set((state) => setThreadExpanded(state, threadId, expanded)),
   reorderProjects: (currentProjectOrder, draggedProjectIds, targetProjectIds) =>
     set((state) =>
       reorderProjects(state, currentProjectOrder, draggedProjectIds, targetProjectIds),

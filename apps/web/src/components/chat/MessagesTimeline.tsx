@@ -5,7 +5,9 @@ import {
   type ServerProviderSkill,
   type TurnId,
 } from "@t3tools/contracts";
-import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import { parseScopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { Link } from "@tanstack/react-router";
+import { buildThreadRouteParams } from "../../threadRoutes";
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import {
   createContext,
@@ -1852,7 +1854,10 @@ function buildToolCallExpandedBody(
 function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
   if (
     workEntry.sourceActivityKind === "user-input.requested" ||
-    workEntry.sourceActivityKind === "user-input.resolved"
+    workEntry.sourceActivityKind === "user-input.resolved" ||
+    // A sub-thread waiting on an approval or on answers is a pending request,
+    // so it shares the request icon vocabulary.
+    workEntry.sourceActivityKind === "thread.child.blocked"
   ) {
     return "message-circle";
   }
@@ -1903,6 +1908,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 }) {
   const { workEntry, workspaceRoot } = props;
   const activity = use(TimelineRowActivityCtx);
+  const { activeThreadEnvironmentId } = use(TimelineRowCtx);
   const [expanded, setExpanded] = useState(false);
   const iconConfig = workToneIcon(workEntry.tone);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
@@ -1921,7 +1927,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const showFailedIndicator = workEntryIndicatesToolFailure(workEntry);
   const showDestructiveRowStyle =
     showFailedIndicator &&
-    (workEntry.sourceActivityKind === "runtime.error" || !workLogEntryIsToolLike(workEntry));
+    (workEntry.sourceActivityKind === "runtime.error" ||
+      // Sub-thread failure entries (pre-turn failures and error-state settlements)
+      // carry tone `error` and render with the destructive heading like runtime errors.
+      workEntry.sourceActivityKind === "thread.child.failed" ||
+      workEntry.sourceActivityKind === "thread.child.turn-settled" ||
+      !workLogEntryIsToolLike(workEntry));
   const iconWrapperClass = cn(
     "flex size-5 shrink-0 items-center justify-center",
     showWarningIndicator
@@ -1983,6 +1994,19 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-px text-muted-foreground/55">
+            {workEntry.linkedThreadId && (
+              <Link
+                to="/$environmentId/$threadId"
+                params={buildThreadRouteParams(
+                  scopeThreadRef(activeThreadEnvironmentId, workEntry.linkedThreadId),
+                )}
+                className="shrink-0 rounded-sm px-1 text-[11px] text-muted-foreground/70 underline underline-offset-2 outline-hidden hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+                onClick={stopRowToggle}
+                onPointerDown={stopRowToggle}
+              >
+                Open sub-thread
+              </Link>
+            )}
             <span
               className="flex size-4 shrink-0 items-center justify-center"
               aria-hidden={!canExpand}
