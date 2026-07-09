@@ -2166,7 +2166,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 }) {
   const { workEntry, workspaceRoot } = props;
   const activity = use(TimelineRowActivityCtx);
-  const { activeThreadEnvironmentId } = use(TimelineRowCtx);
+  const { activeThreadEnvironmentId, threadRef } = use(TimelineRowCtx);
   const [expanded, setExpanded] = useState(false);
   const iconConfig = workToneIcon(workEntry.tone);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
@@ -2269,6 +2269,20 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 Open sub-thread
               </Link>
             )}
+            {threadRef &&
+              workEntry.agentIds?.map((agentId, index) => (
+                <Link
+                  key={agentId}
+                  to="/$environmentId/$threadId"
+                  params={buildThreadRouteParams(threadRef)}
+                  search={{ agentId }}
+                  className="shrink-0 rounded-sm px-1 text-[11px] text-muted-foreground/70 underline underline-offset-2 outline-hidden hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+                  onClick={stopRowToggle}
+                  onPointerDown={stopRowToggle}
+                >
+                  {index === 0 ? "Open sub-agent" : `Agent ${index + 1}`}
+                </Link>
+              ))}
             <span
               className="flex size-4 shrink-0 items-center justify-center"
               aria-hidden={!canExpand}

@@ -3,6 +3,7 @@ import * as Arr from "effect/Array";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
+  MessageId,
   type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
   type OrchestrationProposedPlanId,
@@ -87,6 +88,8 @@ export interface WorkLogEntry {
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
   /** Thread referenced by this entry (from `thread.child.*` activity payloads); rows render a link to it. */
   linkedThreadId?: ThreadId;
+  /** Provider-native sub-agents spawned by this tool row. */
+  agentIds?: ReadonlyArray<string>;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -641,6 +644,14 @@ export function hasActionableProposedPlan(
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
+  return deriveWorkLogEntriesInternal(
+    activities.filter((activity) => activity.agentId === undefined),
+  );
+}
+
+function deriveWorkLogEntriesInternal(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
@@ -728,7 +739,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     turnId: activity.turnId,
     label: taskLabel || activity.summary,
     tone:
-      activity.kind === "task.progress"
+      activity.kind === "task.progress" || activity.kind === "agent.reasoning"
         ? "thinking"
         : activity.tone === "approval"
           ? "info"
@@ -812,6 +823,14 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     payload.childThreadId.length > 0
   ) {
     entry.linkedThreadId = payload.childThreadId as ThreadId;
+  }
+  if (Array.isArray(payload?.agentIds)) {
+    const agentIds = payload.agentIds.filter(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
+    if (agentIds.length > 0) {
+      entry.agentIds = agentIds;
+    }
   }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
@@ -1818,6 +1837,43 @@ export function deriveTimelineEntries(
   return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
     a.createdAt.localeCompare(b.createdAt),
   );
+}
+
+export function deriveNativeAgentTimelineEntries(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  agentId: string,
+): TimelineEntry[] {
+  const scopedActivities = activities.filter((activity) => activity.agentId === agentId);
+  const messages: ChatMessage[] = scopedActivities
+    .filter((activity) => activity.kind === "agent.message")
+    .map((activity) => {
+      const payload = asRecord(activity.payload);
+      const text = typeof payload?.detail === "string" ? payload.detail : activity.summary;
+      return {
+        id: MessageId.make(`native-agent:${agentId}:${activity.id}`),
+        role: "assistant",
+        text,
+        turnId: activity.turnId,
+        streaming: false,
+        createdAt: activity.createdAt,
+        updatedAt: activity.createdAt,
+      };
+    });
+  const workActivities = scopedActivities
+    .filter((activity) => activity.kind !== "agent.message")
+    .map((activity) =>
+      activity.kind === "tool.started"
+        ? {
+            ...activity,
+            kind: "tool.updated",
+            payload: {
+              ...asRecord(activity.payload),
+              status: "inProgress",
+            },
+          }
+        : activity,
+    );
+  return deriveTimelineEntries(messages, [], deriveWorkLogEntriesInternal(workActivities));
 }
 
 export function inferCheckpointTurnCountByTurnId(

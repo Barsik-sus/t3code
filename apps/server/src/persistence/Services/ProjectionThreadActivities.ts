@@ -11,6 +11,7 @@ import {
   IsoDateTime,
   NonNegativeInt,
   OrchestrationThreadActivityTone,
+  TrimmedNonEmptyString,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -24,6 +25,7 @@ export const ProjectionThreadActivity = Schema.Struct({
   activityId: EventId,
   threadId: ThreadId,
   turnId: Schema.NullOr(TurnId),
+  agentId: Schema.NullOr(TrimmedNonEmptyString),
   tone: OrchestrationThreadActivityTone,
   kind: Schema.String,
   summary: Schema.String,

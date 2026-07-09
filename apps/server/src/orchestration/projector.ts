@@ -29,6 +29,7 @@ import {
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
 } from "./Schemas.ts";
+import { pruneNativeAgents } from "./nativeAgents.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
 const MAX_THREAD_MESSAGES = 2_000;
@@ -733,11 +734,14 @@ export function projectEvent(
           if (!thread) {
             return nextBase;
           }
-          const nativeAgents = thread.nativeAgents.some((agent) => agent.id === payload.agent.id)
+          const upsertedAgents = thread.nativeAgents.some((agent) => agent.id === payload.agent.id)
             ? thread.nativeAgents.map((agent) =>
                 agent.id === payload.agent.id ? payload.agent : agent,
               )
             : [...thread.nativeAgents, payload.agent];
+          const nativeAgents = pruneNativeAgents(
+            upsertedAgents.filter((agent) => !(payload.evictedAgentIds ?? []).includes(agent.id)),
+          ).agents;
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {

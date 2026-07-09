@@ -33,6 +33,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import {
   DEFAULT_INTERACTION_MODE,
@@ -1170,6 +1171,35 @@ describe("buildSidebarThreadTree", () => {
       hasChildren: true,
       isExpanded: false,
       subtreeStatus: { label: "Working", pulse: true },
+    });
+  });
+
+  it("keeps settled native agents from the latest turn visible", () => {
+    const parent = {
+      ...treeThread("parent-settled", null),
+      nativeAgents: [
+        {
+          id: "agent-settled",
+          title: "Finished review",
+          status: "completed" as const,
+          turnId: TurnId.make("turn-latest"),
+          model: "gpt-5.4",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:03.000Z",
+        },
+      ],
+    };
+    const nodes = buildSidebarThreadTree({
+      threads: [parent],
+      expandedThreadIds: expandedSet("parent-settled"),
+      pinnedThreadId: null,
+    });
+
+    expect(nodes).toHaveLength(2);
+    expect(nodes[1]).toMatchObject({
+      kind: "native-agent",
+      agent: { id: "agent-settled", status: "completed", turnId: "turn-latest" },
+      subtreeStatus: { label: "Completed" },
     });
   });
 

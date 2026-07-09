@@ -192,6 +192,7 @@ describe("ChildSignalReactor settlement", () => {
       }),
     } as unknown as (typeof Crypto.Crypto)["Service"];
 
+    // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- This test owns a long-lived runtime to exercise its stream reactor across imperative emissions.
     const runtime = ManagedRuntime.make(
       Layer.effect(ChildSignalReactorTag, makeChildSignalReactorForTest).pipe(
         Layer.provideMerge(Layer.succeed(Crypto.Crypto, cryptoStub)),

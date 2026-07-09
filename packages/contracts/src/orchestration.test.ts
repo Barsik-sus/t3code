@@ -12,6 +12,7 @@ import {
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
   OrchestrationThread,
+  OrchestrationThreadActivity,
   OrchestrationThreadShell,
   ProjectCreatedPayload,
   ProjectMetaUpdatedPayload,
@@ -44,6 +45,7 @@ const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
 const decodeThreadArchivedPayload = Schema.decodeUnknownEffect(ThreadArchivedPayload);
 const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
 const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
+const decodeOrchestrationThreadActivity = Schema.decodeUnknownEffect(OrchestrationThreadActivity);
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
@@ -389,6 +391,52 @@ it.effect("decodes cached thread snapshots with hierarchy defaults", () =>
     assert.strictEqual(shell.rootThreadId, "thread-cache-1");
     assert.strictEqual(shell.depth, 0);
     assert.deepStrictEqual(shell.nativeAgents, []);
+  }),
+);
+
+it.effect("decodes historical activities and native-agent shells without new optional fields", () =>
+  Effect.gen(function* () {
+    const activity = yield* decodeOrchestrationThreadActivity({
+      id: "activity-cache-1",
+      tone: "tool",
+      kind: "tool.completed",
+      summary: "Command run",
+      payload: {},
+      turnId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const shell = yield* decodeOrchestrationThreadShell({
+      id: "thread-cache-agent",
+      projectId: "project-cache-1",
+      title: "Cached Thread",
+      modelSelection: { provider: "codex", model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+      session: null,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+      nativeAgents: [
+        {
+          id: "agent-cache-1",
+          title: "Cached agent",
+          status: "completed",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      ],
+    });
+
+    assert.strictEqual(activity.agentId, undefined);
+    assert.strictEqual(shell.nativeAgents[0]?.turnId, undefined);
+    assert.strictEqual(shell.nativeAgents[0]?.model, undefined);
   }),
 );
 

@@ -22,6 +22,7 @@ import {
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
+import { pruneNativeAgents } from "./nativeAgents.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -883,6 +884,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       const existing = thread.nativeAgents.find((agent) => agent.id === command.agentId);
+      const agent = {
+        id: command.agentId,
+        title: command.title ?? existing?.title ?? "Sub-agent",
+        ...(command.detail !== undefined
+          ? { detail: command.detail }
+          : existing?.detail !== undefined
+            ? { detail: existing.detail }
+            : {}),
+        ...(command.model !== undefined
+          ? { model: command.model }
+          : existing?.model !== undefined
+            ? { model: existing.model }
+            : {}),
+        ...(command.reasoningEffort !== undefined
+          ? { reasoningEffort: command.reasoningEffort }
+          : existing?.reasoningEffort !== undefined
+            ? { reasoningEffort: existing.reasoningEffort }
+            : {}),
+        status: command.status,
+        startedAt: existing?.startedAt ?? command.createdAt,
+        updatedAt: command.createdAt,
+        turnId: command.turnId,
+      };
+      const candidateAgents = existing
+        ? thread.nativeAgents.map((entry) => (entry.id === agent.id ? agent : entry))
+        : [...thread.nativeAgents, agent];
+      const { evictedAgentIds } = pruneNativeAgents(candidateAgents);
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -893,19 +921,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.native-agent-upserted",
         payload: {
           threadId: command.threadId,
-          agent: {
-            id: command.agentId,
-            title: command.title ?? existing?.title ?? "Sub-agent",
-            ...(command.detail !== undefined
-              ? { detail: command.detail }
-              : existing?.detail !== undefined
-                ? { detail: existing.detail }
-                : {}),
-            status: command.status,
-            startedAt: existing?.startedAt ?? command.createdAt,
-            updatedAt: command.createdAt,
-            turnId: command.turnId,
-          },
+          agent,
+          evictedAgentIds,
         },
       };
     }

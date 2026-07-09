@@ -249,6 +249,7 @@ import {
   resolveServerConfigVersionMismatch,
 } from "../versionSkew";
 import { useAssetUrls } from "../assets/assetUrls";
+import { NativeAgentView } from "./NativeAgentView";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -362,6 +363,7 @@ type ChatViewProps =
       onDiffPanelOpen?: () => void;
       reserveTitleBarControlInset?: boolean;
       routeKind: "server";
+      agentId?: string;
       draftId?: never;
     }
   | {
@@ -370,6 +372,7 @@ type ChatViewProps =
       onDiffPanelOpen?: () => void;
       reserveTitleBarControlInset?: boolean;
       routeKind: "draft";
+      agentId?: never;
       draftId: DraftId;
     };
 
@@ -5466,6 +5469,15 @@ function ChatViewContent(props: ChatViewProps) {
 }
 
 export default function ChatView(props: ChatViewProps) {
+  if (props.routeKind === "server" && props.agentId) {
+    return (
+      <NativeAgentView
+        environmentId={props.environmentId}
+        threadId={props.threadId}
+        agentId={props.agentId}
+      />
+    );
+  }
   return (
     <DiffWorkerPoolProvider>
       <ChatViewContent {...props} />

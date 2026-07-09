@@ -262,8 +262,28 @@ function requestKindFromCanonicalRequestType(
   }
 }
 
+function agentIdsPayload(data: unknown): { readonly agentIds?: ReadonlyArray<string> } {
+  if (!data || typeof data !== "object") {
+    return {};
+  }
+  const record = data as Record<string, unknown>;
+  const nestedItem =
+    record.item && typeof record.item === "object"
+      ? (record.item as Record<string, unknown>)
+      : undefined;
+  const candidate = record.agentIds ?? record.receiverThreadIds ?? nestedItem?.receiverThreadIds;
+  if (!Array.isArray(candidate)) {
+    return {};
+  }
+  const agentIds = candidate.filter(
+    (value): value is string => typeof value === "string" && value.trim().length > 0,
+  );
+  return agentIds.length > 0 ? { agentIds } : {};
+}
+
 function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
+  fallbackTurnId?: TurnId,
 ): ReadonlyArray<OrchestrationThreadActivity> {
   const maybeSequence = (() => {
     const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
@@ -272,6 +292,44 @@ function runtimeEventToActivities(
       : {};
   })();
   switch (event.type) {
+    case "agent.item": {
+      const isMessage =
+        event.payload.itemType === "assistant_message" || event.payload.itemType === "plan";
+      const isReasoning = event.payload.itemType === "reasoning";
+      const isTool = isToolLifecycleItemType(event.payload.itemType);
+      const kind = isMessage
+        ? "agent.message"
+        : isReasoning
+          ? "agent.reasoning"
+          : isTool
+            ? `tool.${event.payload.phase === "completed" ? "completed" : event.payload.phase}`
+            : `agent.item.${event.payload.phase}`;
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: isTool ? "tool" : "info",
+          kind,
+          summary:
+            event.payload.title ??
+            (isMessage ? "Assistant message" : isReasoning ? "Reasoning" : "Agent item"),
+          payload: {
+            itemType: event.payload.itemType,
+            ...(event.itemId !== undefined ? { itemId: event.itemId } : {}),
+            ...(event.payload.status !== undefined ? { status: event.payload.status } : {}),
+            ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+            ...(event.payload.detail !== undefined
+              ? { detail: truncateDetail(event.payload.detail) }
+              : {}),
+            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? fallbackTurnId ?? null,
+          agentId: event.payload.agentKey,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "request.opened": {
       if (event.payload.requestType === "tool_user_input") {
         return [];
@@ -585,6 +643,7 @@ function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool updated",
           payload: {
             itemType: event.payload.itemType,
+            ...agentIdsPayload(event.payload.data),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
@@ -608,6 +667,7 @@ function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool",
           payload: {
             itemType: event.payload.itemType,
+            ...agentIdsPayload(event.payload.data),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
           },
@@ -630,7 +690,9 @@ function runtimeEventToActivities(
           summary: `${event.payload.title ?? "Tool"} started`,
           payload: {
             itemType: event.payload.itemType,
+            ...agentIdsPayload(event.payload.data),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1233,16 +1295,19 @@ const make = Effect.gen(function* () {
       agentId: event.payload.agentKey,
       ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
       ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
+      ...(event.payload.model !== undefined ? { model: event.payload.model } : {}),
+      ...(event.payload.reasoningEffort !== undefined
+        ? { reasoningEffort: event.payload.reasoningEffort }
+        : {}),
       status: event.payload.status,
       turnId,
       createdAt: event.createdAt,
     });
   });
 
-  const settleAndClearNativeAgents = Effect.fn("settleAndClearNativeAgents")(function* (
+  const settleNativeAgents = Effect.fn("settleNativeAgents")(function* (
     event: ProviderRuntimeEvent,
     threadId: ThreadId,
-    turnId: TurnId | undefined,
   ) {
     const currentThread = yield* orchestrationEngine.getThreadSnapshot(threadId);
     if (!currentThread || currentThread.nativeAgents.length === 0) {
@@ -1269,14 +1334,6 @@ const make = Effect.gen(function* () {
         ),
       { concurrency: 1 },
     ).pipe(Effect.asVoid);
-
-    yield* orchestrationEngine.dispatch({
-      type: "thread.native-agents.clear",
-      commandId: yield* providerCommandId(event, "native-agents-clear"),
-      threadId,
-      ...(turnId !== undefined ? { turnId } : {}),
-      createdAt: event.createdAt,
-    });
   });
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
@@ -1672,7 +1729,7 @@ const make = Effect.gen(function* () {
               event.payload.state === "stopped" ||
               event.payload.state === "error")))
       ) {
-        yield* settleAndClearNativeAgents(event, thread.id, eventTurnId);
+        yield* settleNativeAgents(event, thread.id);
       }
 
       if (event.type === "session.exited") {
@@ -1754,7 +1811,16 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = runtimeEventToActivities(event);
+      const agentItemTurnId =
+        event.type === "agent.item"
+          ? (eventTurnId ??
+            (yield* orchestrationEngine.getThreadSnapshot(thread.id))?.nativeAgents.find(
+              (agent) => agent.id === event.payload.agentKey,
+            )?.turnId ??
+            activeTurnId ??
+            undefined)
+          : undefined;
+      const activities = runtimeEventToActivities(event, agentItemTurnId ?? undefined);
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
           Effect.flatMap((commandId) =>

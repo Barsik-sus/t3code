@@ -1448,6 +1448,116 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "routes native sub-agent messages to agent items without flattening or a synthetic turn",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) =>
+            [
+              "turn.started",
+              "content.delta",
+              "item.started",
+              "item.completed",
+              "agent.lifecycle",
+              "agent.item",
+            ].includes(event.type),
+          ),
+          Stream.take(6),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "delegate",
+          attachments: [],
+        });
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-native-agent",
+          uuid: "native-agent-assistant",
+          parent_tool_use_id: "task-parent-1",
+          message: {
+            role: "assistant",
+            model: "claude-sonnet-4-6",
+            content: [
+              { type: "thinking", thinking: "Inspect the repository first." },
+              { type: "text", text: "I found the relevant path." },
+              {
+                type: "tool_use",
+                id: "native-tool-1",
+                name: "Bash",
+                input: { command: "pwd" },
+              },
+            ],
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-native-agent",
+          uuid: "native-agent-user",
+          parent_tool_use_id: "task-parent-1",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "native-tool-1",
+                content: "/workspace",
+                is_error: false,
+              },
+            ],
+          },
+        } as unknown as SDKMessage);
+
+        const events = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        assert.equal(events.filter((event) => event.type === "turn.started").length, 1);
+        assert.equal(
+          events.some((event) => event.type === "content.delta"),
+          false,
+        );
+        assert.equal(
+          events.some((event) => event.type === "item.started"),
+          false,
+        );
+        assert.equal(
+          events.some((event) => event.type === "item.completed"),
+          false,
+        );
+        const agentItems = events.filter((event) => event.type === "agent.item");
+        assert.deepEqual(
+          agentItems.map((event) => [
+            event.payload.agentKey,
+            event.payload.itemType,
+            event.payload.phase,
+          ]),
+          [
+            ["task-parent-1", "reasoning", "completed"],
+            ["task-parent-1", "assistant_message", "completed"],
+            ["task-parent-1", "command_execution", "started"],
+            ["task-parent-1", "command_execution", "completed"],
+          ],
+        );
+        const modelUpdate = events.find((event) => event.type === "agent.lifecycle");
+        assert.equal(
+          modelUpdate?.type === "agent.lifecycle" ? modelUpdate.payload.model : undefined,
+          "claude-sonnet-4-6",
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("treats user-aborted Claude results as interrupted without a runtime error", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

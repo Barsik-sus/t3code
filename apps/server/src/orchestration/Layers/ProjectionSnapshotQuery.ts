@@ -272,6 +272,9 @@ function mapNativeAgentShells(row: Schema.Schema.Type<typeof ProjectionThreadDbR
     id: agent.id,
     title: agent.title,
     status: agent.status,
+    turnId: agent.turnId,
+    ...(agent.model !== undefined ? { model: agent.model } : {}),
+    ...(agent.reasoningEffort !== undefined ? { reasoningEffort: agent.reasoningEffort } : {}),
     startedAt: agent.startedAt,
     updatedAt: agent.updatedAt,
   }));
@@ -496,6 +499,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           activity_id AS "activityId",
           thread_id AS "threadId",
           turn_id AS "turnId",
+          agent_id AS "agentId",
           tone,
           kind,
           summary,
@@ -868,6 +872,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           activity_id AS "activityId",
           thread_id AS "threadId",
           turn_id AS "turnId",
+          agent_id AS "agentId",
           tone,
           kind,
           summary,
@@ -1134,6 +1139,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   summary: row.summary,
                   payload: row.payload,
                   turnId: row.turnId,
+                  ...(row.agentId !== null ? { agentId: row.agentId } : {}),
                   ...(row.sequence !== null ? { sequence: row.sequence } : {}),
                   createdAt: row.createdAt,
                 });
@@ -2068,6 +2074,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             summary: row.summary,
             payload: row.payload,
             turnId: row.turnId,
+            ...(row.agentId !== null ? { agentId: row.agentId } : {}),
             createdAt: row.createdAt,
           };
           if (row.sequence !== null) {

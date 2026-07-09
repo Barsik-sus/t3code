@@ -11,6 +11,7 @@ import {
   type CanonicalItemType,
   type CanonicalRequestType,
   EventId,
+  isToolLifecycleItemType,
   type CodexSettings,
   ProviderDriverKind,
   type ProviderEvent,
@@ -340,6 +341,10 @@ function mapAgentLifecycleEvents(
               : ("settled" as const),
           title,
           ...(state?.message ? { detail: state.message } : {}),
+          ...(trimText(item.model) ? { model: trimText(item.model) } : {}),
+          ...(item.reasoningEffort !== undefined && item.reasoningEffort !== null
+            ? { reasoningEffort: String(item.reasoningEffort) }
+            : {}),
           status,
         },
       };
@@ -577,6 +582,13 @@ function mapItemLifecycle(
       : lifecycle === "item.completed"
         ? "completed"
         : undefined;
+  const data =
+    item.type === "collabAgentToolCall" && event.payload && typeof event.payload === "object"
+      ? {
+          ...(event.payload as Record<string, unknown>),
+          agentIds: item.receiverThreadIds,
+        }
+      : event.payload;
 
   return {
     ...runtimeEventBase(event, canonicalThreadId),
@@ -586,15 +598,117 @@ function mapItemLifecycle(
       ...(status ? { status } : {}),
       ...(itemTitle(itemType, item) ? { title: itemTitle(itemType, item) } : {}),
       ...(detail ? { detail } : {}),
-      ...(event.payload !== undefined ? { data: event.payload } : {}),
+      ...(data !== undefined ? { data } : {}),
     },
   };
+}
+
+function agentItemDetail(item: CodexLifecycleItem): string | undefined {
+  const direct = itemDetail(item);
+  if (direct) {
+    return direct;
+  }
+  if (item.type === "reasoning") {
+    const parts = [...(item.summary ?? []), ...(item.content ?? [])]
+      .map((part) => trimText(part))
+      .filter((part): part is string => part !== undefined);
+    return parts.length > 0 ? parts.join("\n\n") : undefined;
+  }
+  return undefined;
+}
+
+function mapAgentScopedEvent(
+  event: ProviderEvent & { readonly agentKey: string },
+  canonicalThreadId: ThreadId,
+): ReadonlyArray<ProviderRuntimeEvent> {
+  const base = runtimeEventBase(event, canonicalThreadId);
+  if (event.method === "turn/started") {
+    return [
+      {
+        ...base,
+        type: "agent.lifecycle",
+        payload: {
+          agentKey: event.agentKey,
+          phase: "updated",
+          status: "running",
+        },
+      },
+    ];
+  }
+  if (event.method === "turn/completed") {
+    const payload = readPayload(EffectCodexSchema.V2TurnCompletedNotification, event.payload);
+    if (!payload) {
+      return [];
+    }
+    const status = toTurnStatus(payload.turn.status);
+    return [
+      {
+        ...base,
+        type: "agent.lifecycle",
+        payload: {
+          agentKey: event.agentKey,
+          phase: "settled",
+          status:
+            status === "failed"
+              ? "failed"
+              : status === "interrupted" || status === "cancelled"
+                ? "interrupted"
+                : "completed",
+        },
+      },
+    ];
+  }
+  if (event.method !== "item/started" && event.method !== "item/completed") {
+    return [];
+  }
+  const payload =
+    readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload) ??
+    readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
+  const item = payload?.item;
+  if (!item) {
+    return [];
+  }
+  const itemType = toCanonicalItemType(item.type);
+  const phase = event.method === "item/started" ? "started" : "completed";
+  if (phase === "started" && !isToolLifecycleItemType(itemType)) {
+    return [];
+  }
+  const rawStatus = "status" in item ? String(item.status) : "";
+  const status =
+    phase === "started"
+      ? "inProgress"
+      : rawStatus === "failed" || rawStatus === "errored" || rawStatus === "declined"
+        ? "failed"
+        : "completed";
+  const title = itemTitle(itemType, item);
+  const detail = agentItemDetail(item);
+  return [
+    {
+      ...base,
+      type: "agent.item",
+      payload: {
+        agentKey: event.agentKey,
+        phase,
+        itemType,
+        status,
+        ...(title ? { title } : {}),
+        ...(detail ? { detail } : {}),
+        ...(event.payload !== undefined ? { data: event.payload } : {}),
+      },
+    },
+  ];
 }
 
 function mapToRuntimeEvents(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
 ): ReadonlyArray<ProviderRuntimeEvent> {
+  if (event.agentKey) {
+    return mapAgentScopedEvent(
+      event as ProviderEvent & { readonly agentKey: string },
+      canonicalThreadId,
+    );
+  }
   if (event.kind === "error") {
     if (!event.message) {
       return [];

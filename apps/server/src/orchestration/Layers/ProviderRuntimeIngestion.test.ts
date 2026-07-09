@@ -18,6 +18,7 @@ import {
   MessageId,
   ProjectId,
   ProviderItemId,
+  RuntimeItemId,
   type ServerSettings,
   ThreadId,
   TurnId,
@@ -360,7 +361,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("turn failed");
   });
 
-  it("upserts native agents and interrupts then clears them when the turn settles", async () => {
+  it("upserts native agents and keeps them interrupted when the turn settles", async () => {
     const harness = await createHarness();
     harness.emit({
       type: "turn.started",
@@ -419,7 +420,9 @@ describe("ProviderRuntimeIngestion", () => {
     const settledThread = await Effect.runPromise(
       harness.engine.getThreadSnapshot(asThreadId("thread-1")),
     );
-    expect(settledThread?.nativeAgents).toEqual([]);
+    expect(settledThread?.nativeAgents).toEqual([
+      expect.objectContaining({ id: "agent-1", status: "interrupted", turnId: "turn-native" }),
+    ]);
 
     const events = Array.from(
       await Effect.runPromise(
@@ -434,7 +437,6 @@ describe("ProviderRuntimeIngestion", () => {
     expect(nativeAgentEvents.map((event) => event.type)).toEqual([
       "thread.native-agent-upserted",
       "thread.native-agent-upserted",
-      "thread.native-agents-cleared",
     ]);
     const interrupted = nativeAgentEvents[1];
     expect(
@@ -442,6 +444,131 @@ describe("ProviderRuntimeIngestion", () => {
         ? interrupted.payload.agent.status
         : undefined,
     ).toBe("interrupted");
+  });
+
+  it("appends agent-scoped transcript activities and links collab spawn rows", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-agent-items-turn"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId: asTurnId("turn-agent-items"),
+      payload: {},
+    });
+    harness.emit({
+      type: "agent.lifecycle",
+      eventId: asEventId("evt-agent-items-lifecycle"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId: asTurnId("turn-agent-items"),
+      payload: {
+        agentKey: "agent-items-1",
+        phase: "started",
+        title: "Inspect tests",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        status: "running",
+      },
+    });
+    harness.emit({
+      type: "agent.item",
+      eventId: asEventId("evt-agent-message"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      turnId: asTurnId("turn-agent-items"),
+      itemId: RuntimeItemId.make("agent-message-1"),
+      payload: {
+        agentKey: "agent-items-1",
+        phase: "completed",
+        itemType: "assistant_message",
+        status: "completed",
+        title: "Assistant message",
+        detail: "The tests cover the path.",
+      },
+    });
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-collab-spawn"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      turnId: asTurnId("turn-agent-items"),
+      itemId: RuntimeItemId.make("collab-spawn-1"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "inProgress",
+        title: "Inspect tests",
+        data: { agentIds: ["agent-items-1"] },
+      },
+    });
+    await harness.drain();
+
+    const thread = await Effect.runPromise(
+      harness.engine.getThreadSnapshot(asThreadId("thread-1")),
+    );
+    expect(thread?.nativeAgents[0]).toEqual(
+      expect.objectContaining({
+        id: "agent-items-1",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+      }),
+    );
+    expect(thread?.activities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "evt-agent-message",
+          agentId: "agent-items-1",
+          kind: "agent.message",
+          turnId: "turn-agent-items",
+        }),
+        expect.objectContaining({
+          id: "evt-collab-spawn",
+          kind: "tool.started",
+          payload: expect.objectContaining({ agentIds: ["agent-items-1"] }),
+        }),
+      ]),
+    );
+  });
+
+  it("prunes the oldest settled native agents to the history cap", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-agent-cap-turn"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId: asTurnId("turn-agent-cap"),
+      payload: {},
+    });
+    for (let index = 0; index < 31; index += 1) {
+      harness.emit({
+        type: "agent.lifecycle",
+        eventId: asEventId(`evt-agent-cap-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: `2026-01-01T00:00:${String(index + 1).padStart(2, "0")}.000Z`,
+        turnId: asTurnId("turn-agent-cap"),
+        payload: {
+          agentKey: `agent-cap-${index}`,
+          phase: "settled",
+          title: `Agent ${index}`,
+          status: "completed",
+        },
+      });
+    }
+    await harness.drain();
+
+    const thread = await Effect.runPromise(
+      harness.engine.getThreadSnapshot(asThreadId("thread-1")),
+    );
+    expect(thread?.nativeAgents).toHaveLength(30);
+    expect(thread?.nativeAgents.some((agent) => agent.id === "agent-cap-0")).toBe(false);
+    expect(thread?.nativeAgents.some((agent) => agent.id === "agent-cap-30")).toBe(true);
   });
 
   it("applies provider session.state.changed transitions directly", async () => {
@@ -1492,6 +1619,7 @@ describe("ProviderRuntimeIngestion", () => {
         createdAt,
       }),
     );
+    // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- Legacy async harness setup predates the Effect test-layer migration.
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
@@ -1542,6 +1670,7 @@ describe("ProviderRuntimeIngestion", () => {
       throw new Error("Expected source plan to exist.");
     }
 
+    // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- Legacy async harness setup predates the Effect test-layer migration.
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.start",
@@ -2022,6 +2151,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resumedMessage?.text).toBe(" second half");
     expect(resumedMessage?.streaming).toBe(false);
 
+    // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- Legacy async harness inspection predates the Effect test-layer migration.
     const events = await Effect.runPromise(
       Stream.runCollect(harness.engine.readEvents(0)).pipe(
         Effect.map((chunk) => Array.from(chunk)),
@@ -2160,6 +2290,7 @@ describe("ProviderRuntimeIngestion", () => {
     const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
     const now = "2026-01-01T00:00:00.000Z";
 
+    // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- Legacy async harness setup predates the Effect test-layer migration.
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.start",
@@ -2378,6 +2509,7 @@ describe("ProviderRuntimeIngestion", () => {
         ),
     );
 
+    // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- Legacy async harness inspection predates the Effect test-layer migration.
     const events = await Effect.runPromise(
       Stream.runCollect(harness.engine.readEvents(0)).pipe(
         Effect.map((chunk) => Array.from(chunk)),

@@ -346,7 +346,7 @@ interface SidebarThreadRowProps {
     threadRef: ScopedThreadRef,
     orderedProjectThreadKeys: readonly string[],
   ) => void;
-  navigateToThread: (threadRef: ScopedThreadRef) => void;
+  navigateToThread: (threadRef: ScopedThreadRef, agentId?: string) => void;
   handleMultiSelectContextMenu: (position: { x: number; y: number }) => Promise<void>;
   handleThreadContextMenu: (
     threadRef: ScopedThreadRef,
@@ -967,7 +967,7 @@ interface SidebarProjectThreadListProps {
     threadRef: ScopedThreadRef,
     orderedProjectThreadKeys: readonly string[],
   ) => void;
-  navigateToThread: (threadRef: ScopedThreadRef) => void;
+  navigateToThread: (threadRef: ScopedThreadRef, agentId?: string) => void;
   handleMultiSelectContextMenu: (position: { x: number; y: number }) => Promise<void>;
   handleThreadContextMenu: (
     threadRef: ScopedThreadRef,
@@ -1062,13 +1062,11 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
                   size="sm"
                   data-testid={`native-agent-row-${agent.id}`}
                   className="h-6 w-full translate-x-0 cursor-pointer justify-start px-2 text-left text-muted-foreground/85 select-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring sm:h-7"
-                  onClick={(event) =>
-                    handleThreadClick(event, parentThreadRef, orderedProjectThreadKeys)
-                  }
+                  onClick={() => navigateToThread(parentThreadRef, agent.id)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
-                      navigateToThread(parentThreadRef);
+                      navigateToThread(parentThreadRef, agent.id);
                     }
                   }}
                 >
@@ -1818,7 +1816,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   );
 
   const navigateToThread = useCallback(
-    (threadRef: ScopedThreadRef) => {
+    (threadRef: ScopedThreadRef, agentId?: string) => {
       if (useThreadSelectionStore.getState().selectedThreadKeys.size > 0) {
         clearSelection();
       }
@@ -1829,6 +1827,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       void router.navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
+        search: agentId ? { agentId } : {},
       });
     },
     [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
@@ -3405,7 +3404,7 @@ export default function Sidebar() {
     shortcutLabelForCommand(keybindings, "chat.new", newThreadShortcutLabelOptions);
 
   const navigateToThread = useCallback(
-    (threadRef: ScopedThreadRef) => {
+    (threadRef: ScopedThreadRef, agentId?: string) => {
       if (useThreadSelectionStore.getState().selectedThreadKeys.size > 0) {
         clearSelection();
       }
@@ -3416,6 +3415,7 @@ export default function Sidebar() {
       void navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
+        search: agentId ? { agentId } : {},
       });
     },
     [clearSelection, isMobile, navigate, setOpenMobile, setSelectionAnchor],
