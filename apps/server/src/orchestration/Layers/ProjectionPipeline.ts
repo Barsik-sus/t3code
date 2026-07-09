@@ -44,6 +44,7 @@ import { ProjectionThreadSessionRepositoryLive } from "../../persistence/Layers/
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
 import { ServerConfig } from "../../config.ts";
+import { pruneNativeAgents } from "../nativeAgents.ts";
 import {
   OrchestrationProjectionPipeline,
   type OrchestrationProjectionPipelineShape,
@@ -772,13 +773,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
-          const nativeAgents = existingRow.value.nativeAgents.some(
+          const upsertedAgents = existingRow.value.nativeAgents.some(
             (agent) => agent.id === event.payload.agent.id,
           )
             ? existingRow.value.nativeAgents.map((agent) =>
                 agent.id === event.payload.agent.id ? event.payload.agent : agent,
               )
             : [...existingRow.value.nativeAgents, event.payload.agent];
+          const nativeAgents = pruneNativeAgents(
+            upsertedAgents.filter(
+              (agent) => !(event.payload.evictedAgentIds ?? []).includes(agent.id),
+            ),
+          ).agents;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             nativeAgents,
@@ -1016,6 +1022,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             activityId: event.payload.activity.id,
             threadId: event.payload.threadId,
             turnId: event.payload.activity.turnId,
+            agentId: event.payload.activity.agentId ?? null,
             tone: event.payload.activity.tone,
             kind: event.payload.activity.kind,
             summary: event.payload.activity.summary,

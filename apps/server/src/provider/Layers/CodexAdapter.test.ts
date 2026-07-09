@@ -479,6 +479,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
             agentsStates: { "provider-child": { status: "pendingInit" } },
             prompt: "Review the persistence layer\nBe concise",
             model: "gpt-5.4",
+            reasoningEffort: "high",
           },
         },
       });
@@ -505,6 +506,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
             agentsStates: { "provider-child": { status: "completed" } },
             prompt: "Review the persistence layer\nBe concise",
             model: "gpt-5.4",
+            reasoningEffort: "high",
           },
         },
       });
@@ -531,6 +533,18 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       NodeAssert.equal(
         startedItem?.type === "item.started" ? startedItem.payload.title : undefined,
         "Review the persistence layer",
+      );
+      NodeAssert.deepStrictEqual(
+        lifecycle[0]?.type === "agent.lifecycle"
+          ? [lifecycle[0].payload.model, lifecycle[0].payload.reasoningEffort]
+          : undefined,
+        ["gpt-5.4", "high"],
+      );
+      NodeAssert.deepStrictEqual(
+        startedItem?.type === "item.started"
+          ? (startedItem.payload.data as { agentIds?: string[] }).agentIds
+          : undefined,
+        ["provider-child"],
       );
     }),
   );
@@ -623,6 +637,49 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       NodeAssert.equal(firstEvent.value.itemId, "msg_1");
       NodeAssert.equal(firstEvent.value.turnId, "turn-1");
       NodeAssert.equal(firstEvent.value.payload.itemType, "assistant_message");
+    }),
+  );
+
+  it.effect("maps child-thread content to agent items instead of the parent transcript", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-child-msg-complete"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-parent"),
+        itemId: asItemId("child-msg-1"),
+        agentKey: "provider-child-thread",
+        payload: {
+          completedAtMs: 1_778_000_000_000,
+          threadId: "provider-child-thread",
+          turnId: "child-turn-1",
+          item: {
+            type: "agentMessage",
+            id: "child-msg-1",
+            text: "Child result",
+          },
+        },
+      });
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.type, "agent.item");
+      if (firstEvent.value.type !== "agent.item") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.payload.agentKey, "provider-child-thread");
+      NodeAssert.equal(firstEvent.value.payload.itemType, "assistant_message");
+      NodeAssert.equal(firstEvent.value.payload.detail, "Child result");
+      NodeAssert.equal(firstEvent.value.turnId, "turn-parent");
     }),
   );
 

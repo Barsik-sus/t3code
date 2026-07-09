@@ -480,11 +480,26 @@ export function applyThreadDetailEvent(
     }
 
     case "thread.native-agent-upserted": {
-      const nativeAgents = thread.nativeAgents.some((agent) => agent.id === event.payload.agent.id)
+      const upsertedAgents = thread.nativeAgents.some(
+        (agent) => agent.id === event.payload.agent.id,
+      )
         ? Arr.map(thread.nativeAgents, (agent) =>
             agent.id === event.payload.agent.id ? event.payload.agent : agent,
           )
         : Arr.append(thread.nativeAgents, event.payload.agent);
+      const survivingAgents = upsertedAgents.filter(
+        (agent) => !(event.payload.evictedAgentIds ?? []).includes(agent.id),
+      );
+      const runningAgents = survivingAgents.filter((agent) => agent.status === "running");
+      const settledAgents = survivingAgents
+        .filter((agent) => agent.status !== "running")
+        .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      const keptSettledIds = new Set(
+        settledAgents.slice(0, Math.max(0, 30 - runningAgents.length)).map((agent) => agent.id),
+      );
+      const nativeAgents = survivingAgents.filter(
+        (agent) => agent.status === "running" || keptSettledIds.has(agent.id),
+      );
       return {
         kind: "updated",
         thread: { ...thread, nativeAgents, updatedAt: event.occurredAt },

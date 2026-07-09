@@ -12,6 +12,7 @@ import {
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
+  deriveNativeAgentTimelineEntries,
   deriveTimelineEntries,
   deriveWorkLogEntries,
   findLatestProposedPlan,
@@ -34,6 +35,7 @@ function makeActivity(overrides: {
   payload?: Record<string, unknown>;
   turnId?: string;
   sequence?: number;
+  agentId?: string;
 }): OrchestrationThreadActivity {
   const payload = overrides.payload ?? {};
   return {
@@ -44,9 +46,76 @@ function makeActivity(overrides: {
     tone: overrides.tone ?? "tool",
     payload,
     turnId: overrides.turnId ? TurnId.make(overrides.turnId) : null,
+    ...(overrides.agentId !== undefined ? { agentId: overrides.agentId } : {}),
     ...(overrides.sequence !== undefined ? { sequence: overrides.sequence } : {}),
   };
 }
+
+describe("native-agent transcript derivation", () => {
+  it("keeps agent-tagged activities out of the parent work log", () => {
+    const activities = [
+      makeActivity({ id: "parent-tool", kind: "tool.completed", summary: "Parent tool" }),
+      makeActivity({
+        id: "agent-tool",
+        kind: "tool.completed",
+        summary: "Agent tool",
+        agentId: "agent-1",
+      }),
+    ];
+
+    expect(deriveWorkLogEntries(activities).map((entry) => entry.id)).toEqual(["parent-tool"]);
+  });
+
+  it("builds assistant, reasoning, and expandable tool rows for the selected agent", () => {
+    const timeline = deriveNativeAgentTimelineEntries(
+      [
+        makeActivity({
+          id: "agent-message",
+          kind: "agent.message",
+          summary: "Assistant message",
+          tone: "info",
+          payload: { detail: "Agent answer" },
+          agentId: "agent-1",
+        }),
+        makeActivity({
+          id: "agent-reasoning",
+          kind: "agent.reasoning",
+          summary: "Reasoning",
+          tone: "info",
+          payload: { detail: "Agent thought" },
+          agentId: "agent-1",
+        }),
+        makeActivity({
+          id: "agent-tool-start",
+          kind: "tool.started",
+          summary: "Command run",
+          payload: { itemType: "command_execution", detail: "pwd" },
+          agentId: "agent-1",
+        }),
+        makeActivity({
+          id: "other-agent-message",
+          kind: "agent.message",
+          summary: "Other",
+          tone: "info",
+          payload: { detail: "Hidden" },
+          agentId: "agent-2",
+        }),
+      ],
+      "agent-1",
+    );
+
+    expect(timeline).toHaveLength(3);
+    expect(timeline[0]).toMatchObject({
+      kind: "message",
+      message: { role: "assistant", text: "Agent answer" },
+    });
+    expect(timeline[1]).toMatchObject({ kind: "work", entry: { tone: "thinking" } });
+    expect(timeline[2]).toMatchObject({
+      kind: "work",
+      entry: { itemType: "command_execution", toolLifecycleStatus: "inProgress" },
+    });
+  });
+});
 
 describe("derivePendingApprovals", () => {
   it("tracks open approvals and removes resolved ones", () => {

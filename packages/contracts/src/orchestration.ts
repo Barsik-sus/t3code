@@ -176,6 +176,8 @@ export const OrchestrationNativeAgent = Schema.Struct({
   id: TrimmedNonEmptyString,
   title: TrimmedNonEmptyString,
   detail: Schema.optional(TrimmedNonEmptyString),
+  model: Schema.optional(TrimmedNonEmptyString),
+  reasoningEffort: Schema.optional(TrimmedNonEmptyString),
   status: NativeAgentStatus,
   startedAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -187,6 +189,9 @@ export const OrchestrationNativeAgentShell = Schema.Struct({
   id: TrimmedNonEmptyString,
   title: TrimmedNonEmptyString,
   status: NativeAgentStatus,
+  turnId: Schema.optional(TurnId),
+  model: Schema.optional(TrimmedNonEmptyString),
+  reasoningEffort: Schema.optional(TrimmedNonEmptyString),
   startedAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -378,6 +383,7 @@ export const OrchestrationThreadActivity = Schema.Struct({
   summary: TrimmedNonEmptyString,
   payload: Schema.Unknown,
   turnId: Schema.NullOr(TurnId),
+  agentId: Schema.optional(TrimmedNonEmptyString),
   sequence: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
 });
@@ -903,6 +909,8 @@ const ThreadNativeAgentUpsertCommand = Schema.Struct({
   agentId: TrimmedNonEmptyString,
   title: Schema.optional(TrimmedNonEmptyString),
   detail: Schema.optional(TrimmedNonEmptyString),
+  model: Schema.optional(TrimmedNonEmptyString),
+  reasoningEffort: Schema.optional(TrimmedNonEmptyString),
   status: NativeAgentStatus,
   turnId: TurnId,
   createdAt: IsoDateTime,
@@ -1149,6 +1157,10 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
 export const ThreadNativeAgentUpsertedPayload = Schema.Struct({
   threadId: ThreadId,
   agent: OrchestrationNativeAgent,
+  evictedAgentIds: Schema.Array(TrimmedNonEmptyString).pipe(
+    Schema.optional,
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 
 export const ThreadNativeAgentsClearedPayload = Schema.Struct({

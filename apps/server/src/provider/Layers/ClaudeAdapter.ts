@@ -194,6 +194,8 @@ interface ClaudeSessionContext {
     items: Array<unknown>;
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
+  readonly nativeAgentTools: Map<string, ToolInFlight>;
+  readonly nativeAgentModels: Map<string, string>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
@@ -2524,6 +2526,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           data: {
             toolName: tool.toolName,
             input: toolInput,
+            ...(tool.itemType === "collab_agent_tool_call" ? { agentIds: [tool.itemId] } : {}),
           },
         },
         providerRefs: nativeProviderRefs(context, {
@@ -2611,6 +2614,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         toolName: tool.toolName,
         input: tool.input,
         result: toolResult.block,
+        ...(tool.itemType === "collab_agent_tool_call" ? { agentIds: [tool.itemId] } : {}),
       };
 
       const updatedStamp = yield* makeEventStamp();
@@ -3170,12 +3174,178 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
   });
 
+  const handleNativeAgentSdkMessage = Effect.fn("handleNativeAgentSdkMessage")(function* (
+    context: ClaudeSessionContext,
+    message: SDKMessage,
+    agentKey: string,
+  ) {
+    const turnId = context.turnState?.turnId;
+    const raw = {
+      source: "claude.sdk.message" as const,
+      method: sdkNativeMethod(message),
+      payload: message,
+    };
+
+    if (message.type === "assistant") {
+      const modelValue = (message.message as { model?: unknown } | undefined)?.model;
+      const model = typeof modelValue === "string" ? modelValue.trim() : "";
+      if (model && context.nativeAgentModels.get(agentKey) !== model) {
+        context.nativeAgentModels.set(agentKey, model);
+        const lifecycleStamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "agent.lifecycle",
+          eventId: lifecycleStamp.eventId,
+          provider: PROVIDER,
+          createdAt: lifecycleStamp.createdAt,
+          threadId: context.session.threadId,
+          ...(turnId ? { turnId } : {}),
+          payload: {
+            agentKey,
+            phase: "updated",
+            status: "running",
+            model,
+          },
+          providerRefs: nativeProviderRefs(context),
+          raw,
+        });
+      }
+
+      const content = (message.message as { content?: unknown } | undefined)?.content;
+      if (!Array.isArray(content)) {
+        return;
+      }
+      for (const [index, entry] of content.entries()) {
+        if (!entry || typeof entry !== "object") {
+          continue;
+        }
+        const block = entry as Record<string, unknown>;
+        const blockType = typeof block.type === "string" ? block.type : "";
+        if (blockType === "text" || blockType === "thinking") {
+          const textValue = blockType === "text" ? block.text : block.thinking;
+          const detail = typeof textValue === "string" ? textValue.trim() : "";
+          if (!detail) {
+            continue;
+          }
+          const itemId = `${message.uuid}:${index}`;
+          const stamp = yield* makeEventStamp();
+          yield* offerRuntimeEvent({
+            type: "agent.item",
+            eventId: stamp.eventId,
+            provider: PROVIDER,
+            createdAt: stamp.createdAt,
+            threadId: context.session.threadId,
+            ...(turnId ? { turnId } : {}),
+            itemId: asRuntimeItemId(itemId),
+            payload: {
+              agentKey,
+              phase: "completed",
+              itemType: blockType === "text" ? "assistant_message" : "reasoning",
+              status: "completed",
+              title: blockType === "text" ? "Assistant message" : "Reasoning",
+              detail,
+            },
+            providerRefs: nativeProviderRefs(context, { providerItemId: itemId }),
+            raw,
+          });
+          continue;
+        }
+
+        if (blockType !== "tool_use") {
+          continue;
+        }
+        const itemId = typeof block.id === "string" ? block.id : `${message.uuid}:tool:${index}`;
+        const toolName = typeof block.name === "string" ? block.name : "Tool";
+        const input =
+          block.input && typeof block.input === "object"
+            ? (block.input as Record<string, unknown>)
+            : {};
+        const itemType = classifyToolItemType(toolName);
+        const tool: ToolInFlight = {
+          itemId,
+          itemType,
+          toolName,
+          title: titleForTool(itemType),
+          detail: summarizeToolRequest(toolName, input),
+          input,
+          partialInputJson: "",
+        };
+        context.nativeAgentTools.set(`${agentKey}:${itemId}`, tool);
+        const stamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "agent.item",
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          ...(turnId ? { turnId } : {}),
+          itemId: asRuntimeItemId(itemId),
+          payload: {
+            agentKey,
+            phase: "started",
+            itemType,
+            status: "inProgress",
+            title: tool.title,
+            ...(tool.detail ? { detail: tool.detail } : {}),
+            data: { toolName, input },
+          },
+          providerRefs: nativeProviderRefs(context, { providerItemId: itemId }),
+          raw,
+        });
+      }
+      return;
+    }
+
+    if (message.type !== "user") {
+      return;
+    }
+    for (const toolResult of toolResultBlocksFromUserMessage(message)) {
+      const mapKey = `${agentKey}:${toolResult.toolUseId}`;
+      const tool = context.nativeAgentTools.get(mapKey);
+      if (!tool) {
+        continue;
+      }
+      const stamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent({
+        type: "agent.item",
+        eventId: stamp.eventId,
+        provider: PROVIDER,
+        createdAt: stamp.createdAt,
+        threadId: context.session.threadId,
+        ...(turnId ? { turnId } : {}),
+        itemId: asRuntimeItemId(tool.itemId),
+        payload: {
+          agentKey,
+          phase: "completed",
+          itemType: tool.itemType,
+          status: toolResult.isError ? "failed" : "completed",
+          title: tool.title,
+          ...(tool.detail ? { detail: tool.detail } : {}),
+          data: {
+            toolName: tool.toolName,
+            input: tool.input,
+            result: toolResult.block,
+          },
+        },
+        providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
+        raw,
+      });
+      context.nativeAgentTools.delete(mapKey);
+    }
+  });
+
   const handleSdkMessage = Effect.fn("handleSdkMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
   ) {
     yield* logNativeSdkMessage(context, message);
     yield* ensureThreadId(context, message);
+
+    const parentToolUseId =
+      "parent_tool_use_id" in message ? message.parent_tool_use_id : undefined;
+    if (typeof parentToolUseId === "string" && parentToolUseId.trim().length > 0) {
+      yield* handleNativeAgentSdkMessage(context, message, parentToolUseId);
+      return;
+    }
 
     switch (message.type) {
       case "stream_event":
@@ -3436,6 +3606,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
       const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
       const inFlightTools = new Map<number, ToolInFlight>();
+      const nativeAgentTools = new Map<string, ToolInFlight>();
+      const nativeAgentModels = new Map<string, string>();
       const claudeTasks = new Map<string, ClaudeTaskState>();
 
       const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
@@ -3877,6 +4049,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         pendingUserInputs,
         turns: [],
         inFlightTools,
+        nativeAgentTools,
+        nativeAgentModels,
         claudeTasks,
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
