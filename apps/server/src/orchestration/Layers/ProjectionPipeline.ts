@@ -817,7 +817,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            latestTurnId: event.payload.session.activeTurnId,
+            // A session-set with no active turn is a settle (or idle
+            // heartbeat), not a retraction: keep pointing at the turn that
+            // just ran, matching the in-memory projector which settles
+            // latestTurn in place. Turns without file changes emit no
+            // thread.turn-diff-completed, so nothing else restores the
+            // pointer if it is cleared here.
+            latestTurnId: event.payload.session.activeTurnId ?? existingRow.value.latestTurnId,
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);

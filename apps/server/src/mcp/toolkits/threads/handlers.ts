@@ -280,12 +280,15 @@ const makeHandlers = Effect.gen(function* () {
     const pending: Array<string> = [];
     let readyChildCount = 0;
     for (const childId of input.childIds) {
-      const child = yield* snapshots.getThreadDetailById(childId);
-      if (Option.isNone(child)) {
+      // Poll the engine's dispatch-consistent read model, not the SQL
+      // projection: the projection can lag settlement by minutes after
+      // heavy turns, and this loop's whole job is to observe settlement.
+      const child = yield* engine.getThreadSnapshot(childId);
+      if (!child) {
         pending.push(childId);
         continue;
       }
-      const classification = classifyChildThread(child.value, input.turnId);
+      const classification = classifyChildThread(child, input.turnId);
       if (classification.kind === "settled") {
         settled.push(classification.settled);
         readyChildCount += 1;
