@@ -876,6 +876,62 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.native-agent.upsert": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const existing = thread.nativeAgents.find((agent) => agent.id === command.agentId);
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.native-agent-upserted",
+        payload: {
+          threadId: command.threadId,
+          agent: {
+            id: command.agentId,
+            title: command.title ?? existing?.title ?? "Sub-agent",
+            ...(command.detail !== undefined
+              ? { detail: command.detail }
+              : existing?.detail !== undefined
+                ? { detail: existing.detail }
+                : {}),
+            status: command.status,
+            startedAt: existing?.startedAt ?? command.createdAt,
+            updatedAt: command.createdAt,
+            turnId: command.turnId,
+          },
+        },
+      };
+    }
+
+    case "thread.native-agents.clear": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.native-agents-cleared",
+        payload: {
+          threadId: command.threadId,
+          ...(command.turnId !== undefined ? { turnId: command.turnId } : {}),
+          clearedAt: command.createdAt,
+        },
+      };
+    }
+
     default: {
       command satisfies never;
       const fallback = command as never as { type: string };

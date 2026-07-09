@@ -56,6 +56,7 @@ export function buildLocalDraftThread(
     checkpoints: [],
     activities: [],
     proposedPlans: [],
+    nativeAgents: [],
   };
 }
 

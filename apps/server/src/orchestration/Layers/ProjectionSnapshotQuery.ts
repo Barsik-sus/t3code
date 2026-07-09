@@ -9,6 +9,7 @@ import {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThread,
+  OrchestrationNativeAgent,
   OrchestrationThreadDetailSnapshot,
   ProjectScript,
   TurnId,
@@ -80,6 +81,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
     origin: Schema.fromJsonString(ThreadOrigin),
+    nativeAgents: Schema.fromJsonString(Schema.Array(OrchestrationNativeAgent)),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -265,6 +267,16 @@ function mapThreadHierarchyFields(row: Schema.Schema.Type<typeof ProjectionThrea
   };
 }
 
+function mapNativeAgentShells(row: Schema.Schema.Type<typeof ProjectionThreadDbRowSchema>) {
+  return row.nativeAgents.map((agent) => ({
+    id: agent.id,
+    title: agent.title,
+    status: agent.status,
+    startedAt: agent.startedAt,
+    updatedAt: agent.updatedAt,
+  }));
+}
+
 function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: string) {
   return (cause: unknown): ProjectionRepositoryError =>
     Schema.isSchemaError(cause)
@@ -346,6 +358,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_depth AS "threadDepth",
           COALESCE(origin_json, '{"kind":"user"}') AS "origin",
           COALESCE(notify_mode, 'none') AS "notifyMode",
+          COALESCE(native_agents_json, '[]') AS "nativeAgents",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -380,6 +393,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_depth AS "threadDepth",
           COALESCE(origin_json, '{"kind":"user"}') AS "origin",
           COALESCE(notify_mode, 'none') AS "notifyMode",
+          COALESCE(native_agents_json, '[]') AS "nativeAgents",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -416,6 +430,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_depth AS "threadDepth",
           COALESCE(origin_json, '{"kind":"user"}') AS "origin",
           COALESCE(notify_mode, 'none') AS "notifyMode",
+          COALESCE(native_agents_json, '[]') AS "nativeAgents",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -784,6 +799,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_depth AS "threadDepth",
           COALESCE(origin_json, '{"kind":"user"}') AS "origin",
           COALESCE(notify_mode, 'none') AS "notifyMode",
+          COALESCE(native_agents_json, '[]') AS "nativeAgents",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1228,6 +1244,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 activities: activitiesByThread.get(row.threadId) ?? [],
                 checkpoints: checkpointsByThread.get(row.threadId) ?? [],
                 session: sessionsByThread.get(row.threadId) ?? null,
+                nativeAgents: row.nativeAgents,
               }));
 
               const snapshot = {
@@ -1427,6 +1444,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   activities: [],
                   checkpoints: [],
                   session: sessionByThread.get(row.threadId) ?? null,
+                  nativeAgents: row.nativeAgents,
                 });
               }
 
@@ -1556,6 +1574,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       hasPendingApprovals: row.pendingApprovalCount > 0,
                       hasPendingUserInput: row.pendingUserInputCount > 0,
                       hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
+                      nativeAgents: mapNativeAgentShells(row),
                     } satisfies OrchestrationThreadShell)
                   : Result.failVoid,
               ),
@@ -1691,6 +1710,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   hasPendingApprovals: row.pendingApprovalCount > 0,
                   hasPendingUserInput: row.pendingUserInputCount > 0,
                   hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
+                  nativeAgents: mapNativeAgentShells(row),
                 }),
               ),
               updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
@@ -1932,6 +1952,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
+        nativeAgents: mapNativeAgentShells(threadRow.value),
       } satisfies OrchestrationThreadShell);
     });
 
@@ -2064,6 +2085,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           completedAt: row.completedAt,
         })),
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
+        nativeAgents: threadRow.value.nativeAgents,
       };
 
       return Option.some(

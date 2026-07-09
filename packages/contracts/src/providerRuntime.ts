@@ -166,6 +166,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "turn.proposed.delta",
   "turn.proposed.completed",
   "turn.diff.updated",
+  "agent.lifecycle",
   "item.started",
   "item.updated",
   "item.completed",
@@ -217,6 +218,7 @@ const TurnPlanUpdatedType = Schema.Literal("turn.plan.updated");
 const TurnProposedDeltaType = Schema.Literal("turn.proposed.delta");
 const TurnProposedCompletedType = Schema.Literal("turn.proposed.completed");
 const TurnDiffUpdatedType = Schema.Literal("turn.diff.updated");
+const AgentLifecycleType = Schema.Literal("agent.lifecycle");
 const ItemStartedType = Schema.Literal("item.started");
 const ItemUpdatedType = Schema.Literal("item.updated");
 const ItemCompletedType = Schema.Literal("item.completed");
@@ -411,6 +413,15 @@ export const ItemLifecyclePayload = Schema.Struct({
   data: Schema.optional(Schema.Unknown),
 });
 export type ItemLifecyclePayload = typeof ItemLifecyclePayload.Type;
+
+export const AgentLifecyclePayload = Schema.Struct({
+  agentKey: TrimmedNonEmptyStringSchema,
+  phase: Schema.Literals(["started", "updated", "settled"]),
+  title: Schema.optional(TrimmedNonEmptyStringSchema),
+  detail: Schema.optional(TrimmedNonEmptyStringSchema),
+  status: Schema.Literals(["running", "completed", "failed", "interrupted"]),
+});
+export type AgentLifecyclePayload = typeof AgentLifecyclePayload.Type;
 
 const ContentDeltaPayload = Schema.Struct({
   streamKind: RuntimeContentStreamKind,
@@ -778,6 +789,13 @@ const ProviderRuntimeItemStartedEvent = Schema.Struct({
 });
 export type ProviderRuntimeItemStartedEvent = typeof ProviderRuntimeItemStartedEvent.Type;
 
+const ProviderRuntimeAgentLifecycleEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: AgentLifecycleType,
+  payload: AgentLifecyclePayload,
+});
+export type ProviderRuntimeAgentLifecycleEvent = typeof ProviderRuntimeAgentLifecycleEvent.Type;
+
 const ProviderRuntimeItemUpdatedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: ItemUpdatedType,
@@ -1000,6 +1018,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeTurnProposedDeltaEvent,
   ProviderRuntimeTurnProposedCompletedEvent,
   ProviderRuntimeTurnDiffUpdatedEvent,
+  ProviderRuntimeAgentLifecycleEvent,
   ProviderRuntimeItemStartedEvent,
   ProviderRuntimeItemUpdatedEvent,
   ProviderRuntimeItemCompletedEvent,

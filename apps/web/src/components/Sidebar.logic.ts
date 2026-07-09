@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { ThreadId } from "@t3tools/contracts";
+import type { OrchestrationNativeAgentShell, ThreadId } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import {
   getThreadSortTimestamp,
@@ -35,7 +35,8 @@ export interface ThreadStatusPill {
     | "Failed"
     | "Pending Approval"
     | "Awaiting Input"
-    | "Plan Ready";
+    | "Plan Ready"
+    | "Interrupted";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
@@ -48,6 +49,7 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   Working: 3,
   Connecting: 3,
   "Plan Ready": 2,
+  Interrupted: 2,
   Completed: 1,
 };
 
@@ -451,6 +453,41 @@ export function resolveThreadStatusPill(input: {
   return null;
 }
 
+export function resolveNativeAgentStatusPill(
+  status: OrchestrationNativeAgentShell["status"],
+): ThreadStatusPill {
+  switch (status) {
+    case "running":
+      return {
+        label: "Working",
+        colorClass: "text-sky-600 dark:text-sky-300/80",
+        dotClass: "bg-sky-500 dark:bg-sky-300/80",
+        pulse: true,
+      };
+    case "completed":
+      return {
+        label: "Completed",
+        colorClass: "text-emerald-600 dark:text-emerald-300/90",
+        dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
+        pulse: false,
+      };
+    case "failed":
+      return {
+        label: "Failed",
+        colorClass: "text-destructive",
+        dotClass: "bg-destructive",
+        pulse: false,
+      };
+    case "interrupted":
+      return {
+        label: "Interrupted",
+        colorClass: "text-zinc-500 dark:text-zinc-400/80",
+        dotClass: "bg-zinc-500 dark:bg-zinc-400/80",
+        pulse: false,
+      };
+  }
+}
+
 export function resolveProjectStatusIndicator(
   statuses: ReadonlyArray<ThreadStatusPill | null>,
 ): ThreadStatusPill | null {
@@ -470,7 +507,9 @@ export function resolveProjectStatusIndicator(
 }
 
 export interface SidebarThreadTreeNode<TThread> {
+  kind: "thread" | "native-agent";
   thread: TThread;
+  agent?: OrchestrationNativeAgentShell;
   /** Structural depth (root = 0). Rendering caps the *indent* at 3; this value is uncapped. */
   depth: number;
   hasChildren: boolean;
@@ -503,7 +542,11 @@ export interface SidebarThreadTreeNode<TThread> {
  * `{ id, parentThreadId }` alone. Callers that only care about order omit it.
  */
 export function buildSidebarThreadTree<
-  TThread extends { id: ThreadId; parentThreadId: ThreadId | null },
+  TThread extends {
+    id: ThreadId;
+    parentThreadId: ThreadId | null;
+    nativeAgents?: ReadonlyArray<OrchestrationNativeAgentShell>;
+  },
 >(input: {
   threads: readonly TThread[];
   expandedThreadIds: ReadonlySet<ThreadId>;
@@ -512,6 +555,7 @@ export function buildSidebarThreadTree<
 }): Array<SidebarThreadTreeNode<TThread>> {
   const { expandedThreadIds, pinnedThreadId, threads } = input;
   const resolveStatus = input.resolveStatus ?? (() => null);
+  const nativeAgentsOf = (thread: TThread) => thread.nativeAgents ?? [];
 
   const byId = new Map<ThreadId, TThread>();
   const inputIndex = new Map<ThreadId, number>();
@@ -558,6 +602,9 @@ export function buildSidebarThreadTree<
   const computeStatus = (thread: TThread): ThreadStatusPill | null => {
     const statuses: Array<ThreadStatusPill | null> = [resolveStatus(thread)];
     for (const child of childrenOf(thread.id)) statuses.push(computeStatus(child));
+    for (const agent of nativeAgentsOf(thread)) {
+      statuses.push(resolveNativeAgentStatusPill(agent.status));
+    }
     const rolled = resolveProjectStatusIndicator(statuses);
     subtreeStatus.set(thread.id, rolled);
     return rolled;
@@ -595,6 +642,7 @@ export function buildSidebarThreadTree<
     hasChildren: boolean,
     isExpanded: boolean,
   ): SidebarThreadTreeNode<TThread> => ({
+    kind: "thread",
     thread,
     depth,
     hasChildren,
@@ -604,13 +652,25 @@ export function buildSidebarThreadTree<
 
   const walk = (thread: TThread, depth: number): void => {
     const children = sortSiblings(childrenOf(thread.id));
-    const hasChildren = children.length > 0;
+    const nativeAgents = nativeAgentsOf(thread);
+    const hasChildren = children.length > 0 || nativeAgents.length > 0;
     const isExpanded = hasChildren && expandedThreadIds.has(thread.id);
     output.push(toNode(thread, depth, hasChildren, isExpanded));
     emitted.add(thread.id);
 
     if (isExpanded) {
       for (const child of children) walk(child, depth + 1);
+      for (const agent of nativeAgents) {
+        output.push({
+          kind: "native-agent",
+          thread,
+          agent,
+          depth: depth + 1,
+          hasChildren: false,
+          isExpanded: false,
+          subtreeStatus: resolveNativeAgentStatusPill(agent.status),
+        });
+      }
       return;
     }
     // Collapsed: keep the pinned (active) thread visible even under a collapsed
@@ -695,7 +755,11 @@ export function sliceSidebarThreadTreeToPreview<TThread extends { id: ThreadId }
  * threads explicitly collapsed in `threadExpandedById` hide their descendants.
  */
 export function buildRenderedProjectThreadTree<
-  TThread extends { id: ThreadId; parentThreadId: ThreadId | null },
+  TThread extends {
+    id: ThreadId;
+    parentThreadId: ThreadId | null;
+    nativeAgents?: ReadonlyArray<OrchestrationNativeAgentShell>;
+  },
 >(input: {
   sortedThreads: readonly TThread[];
   threadExpandedById: Readonly<Record<string, boolean>>;

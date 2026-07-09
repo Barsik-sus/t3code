@@ -34,6 +34,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     origin: { kind: "user" as const },
     rootThreadId: ThreadId.make("thread-1"),
     depth: 0,
+    nativeAgents: [],
     ...overrides,
   };
 }

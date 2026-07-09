@@ -40,6 +40,7 @@ function makeThread(
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
+    nativeAgents: [],
     ...input,
     parentThreadId: input.parentThreadId ?? null,
     origin: input.origin ?? { kind: "user" as const },

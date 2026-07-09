@@ -156,6 +156,7 @@ describe("OrchestrationEngine", () => {
           activities: [],
           checkpoints: [],
           session: null,
+          nativeAgents: [],
         },
       ],
     };

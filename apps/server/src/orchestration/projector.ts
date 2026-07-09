@@ -15,6 +15,8 @@ import {
   ProjectDeletedPayload,
   ProjectMetaUpdatedPayload,
   ThreadActivityAppendedPayload,
+  ThreadNativeAgentUpsertedPayload,
+  ThreadNativeAgentsClearedPayload,
   ThreadArchivedPayload,
   ThreadCreatedPayload,
   ThreadDeletedPayload,
@@ -315,6 +317,7 @@ export function projectEvent(
             activities: [],
             checkpoints: [],
             session: null,
+            nativeAgents: [],
           },
           event.type,
           "thread",
@@ -716,6 +719,49 @@ export function projectEvent(
             }),
           };
         }),
+      );
+
+    case "thread.native-agent-upserted":
+      return decodeForEvent(
+        ThreadNativeAgentUpsertedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+          const nativeAgents = thread.nativeAgents.some((agent) => agent.id === payload.agent.id)
+            ? thread.nativeAgents.map((agent) =>
+                agent.id === payload.agent.id ? payload.agent : agent,
+              )
+            : [...thread.nativeAgents, payload.agent];
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              nativeAgents,
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.native-agents-cleared":
+      return decodeForEvent(
+        ThreadNativeAgentsClearedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            nativeAgents: [],
+            updatedAt: event.occurredAt,
+          }),
+        })),
       );
 
     default:

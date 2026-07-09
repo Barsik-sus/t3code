@@ -35,6 +35,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     depth: 0,
     checkpoints: [],
     activities: [],
+    nativeAgents: [],
     ...overrides,
   };
 }

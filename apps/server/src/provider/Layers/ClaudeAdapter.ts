@@ -882,6 +882,17 @@ function titleForTool(itemType: CanonicalItemType): string {
   }
 }
 
+function nativeAgentPresentation(tool: ToolInFlight): { title: string; detail?: string } {
+  const description =
+    typeof tool.input.description === "string" ? tool.input.description.trim() : "";
+  const subagentType =
+    typeof tool.input.subagent_type === "string" ? tool.input.subagent_type.trim() : "";
+  return {
+    title: description || subagentType || tool.toolName,
+    ...(subagentType ? { detail: subagentType } : {}),
+  };
+}
+
 const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
   "image/gif",
   "image/jpeg",
@@ -2524,6 +2535,34 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: message,
         },
       });
+      if (tool.itemType === "collab_agent_tool_call") {
+        const presentation = nativeAgentPresentation(tool);
+        const agentStamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "agent.lifecycle",
+          eventId: agentStamp.eventId,
+          provider: PROVIDER,
+          createdAt: agentStamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+          itemId: asRuntimeItemId(tool.itemId),
+          payload: {
+            agentKey: tool.itemId,
+            phase: "started",
+            title: presentation.title,
+            ...(presentation.detail ? { detail: presentation.detail } : {}),
+            status: "running",
+          },
+          providerRefs: nativeProviderRefs(context, {
+            providerItemId: tool.itemId,
+          }),
+          raw: {
+            source: "claude.sdk.message",
+            method: "claude/stream_event/content_block_start",
+            payload: message,
+          },
+        });
+      }
       return;
     }
 
@@ -2651,6 +2690,35 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: message,
         },
       });
+
+      if (tool.itemType === "collab_agent_tool_call") {
+        const presentation = nativeAgentPresentation(tool);
+        const agentStamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "agent.lifecycle",
+          eventId: agentStamp.eventId,
+          provider: PROVIDER,
+          createdAt: agentStamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+          itemId: asRuntimeItemId(tool.itemId),
+          payload: {
+            agentKey: tool.itemId,
+            phase: "settled",
+            title: presentation.title,
+            ...(presentation.detail ? { detail: presentation.detail } : {}),
+            status: toolResult.isError ? "failed" : "completed",
+          },
+          providerRefs: nativeProviderRefs(context, {
+            providerItemId: tool.itemId,
+          }),
+          raw: {
+            source: "claude.sdk.message",
+            method: "claude/user",
+            payload: message,
+          },
+        });
+      }
 
       if (
         !toolResult.isError &&

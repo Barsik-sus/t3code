@@ -44,6 +44,7 @@ const baseThread: OrchestrationThread = {
   activities: [],
   checkpoints: [],
   session: null,
+  nativeAgents: [],
 };
 
 describe("applyThreadDetailEvent", () => {

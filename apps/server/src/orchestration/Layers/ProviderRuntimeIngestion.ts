@@ -1221,6 +1221,64 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const upsertNativeAgent = Effect.fn("upsertNativeAgent")(function* (
+    event: Extract<ProviderRuntimeEvent, { type: "agent.lifecycle" }>,
+    threadId: ThreadId,
+    turnId: TurnId,
+  ) {
+    yield* orchestrationEngine.dispatch({
+      type: "thread.native-agent.upsert",
+      commandId: yield* providerCommandId(event, `native-agent-${event.payload.agentKey}`),
+      threadId,
+      agentId: event.payload.agentKey,
+      ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+      ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
+      status: event.payload.status,
+      turnId,
+      createdAt: event.createdAt,
+    });
+  });
+
+  const settleAndClearNativeAgents = Effect.fn("settleAndClearNativeAgents")(function* (
+    event: ProviderRuntimeEvent,
+    threadId: ThreadId,
+    turnId: TurnId | undefined,
+  ) {
+    const currentThread = yield* orchestrationEngine.getThreadSnapshot(threadId);
+    if (!currentThread || currentThread.nativeAgents.length === 0) {
+      return;
+    }
+
+    yield* Effect.forEach(
+      currentThread.nativeAgents.filter((agent) => agent.status === "running"),
+      (agent) =>
+        providerCommandId(event, `native-agent-interrupt-${agent.id}`).pipe(
+          Effect.flatMap((commandId) =>
+            orchestrationEngine.dispatch({
+              type: "thread.native-agent.upsert",
+              commandId,
+              threadId,
+              agentId: agent.id,
+              title: agent.title,
+              ...(agent.detail !== undefined ? { detail: agent.detail } : {}),
+              status: "interrupted",
+              turnId: agent.turnId,
+              createdAt: event.createdAt,
+            }),
+          ),
+        ),
+      { concurrency: 1 },
+    ).pipe(Effect.asVoid);
+
+    yield* orchestrationEngine.dispatch({
+      type: "thread.native-agents.clear",
+      commandId: yield* providerCommandId(event, "native-agents-clear"),
+      threadId,
+      ...(turnId !== undefined ? { turnId } : {}),
+      createdAt: event.createdAt,
+    });
+  });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       const thread = yield* resolveThreadShell(event.threadId);
@@ -1273,6 +1331,7 @@ const make = Effect.gen(function* () {
           case "turn.started":
             return !conflictsWithActiveTurn || conflictingTurnStartIsPendingTurnStart;
           case "turn.completed":
+          case "turn.aborted":
             if (conflictsWithActiveTurn || missingTurnForActiveTurn) {
               return false;
             }
@@ -1290,6 +1349,15 @@ const make = Effect.gen(function* () {
         event.type === "turn.started" && shouldApplyThreadLifecycle
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
+
+      if (event.type === "agent.lifecycle") {
+        const currentThread = yield* orchestrationEngine.getThreadSnapshot(thread.id);
+        const nativeAgentTurnId =
+          eventTurnId ?? currentThread?.session?.activeTurnId ?? currentThread?.latestTurn?.turnId;
+        if (nativeAgentTurnId !== undefined && nativeAgentTurnId !== null) {
+          yield* upsertNativeAgent(event, thread.id, nativeAgentTurnId);
+        }
+      }
 
       if (
         event.type === "session.started" ||
@@ -1591,6 +1659,20 @@ const make = Effect.gen(function* () {
             updatedAt: now,
           });
         }
+      }
+
+      if (
+        shouldApplyThreadLifecycle &&
+        (event.type === "turn.completed" ||
+          event.type === "turn.aborted" ||
+          event.type === "session.exited" ||
+          event.type === "runtime.error" ||
+          (event.type === "session.state.changed" &&
+            (event.payload.state === "ready" ||
+              event.payload.state === "stopped" ||
+              event.payload.state === "error")))
+      ) {
+        yield* settleAndClearNativeAgents(event, thread.id, eventTurnId);
       }
 
       if (event.type === "session.exited") {
