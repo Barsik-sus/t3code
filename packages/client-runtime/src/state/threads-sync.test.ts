@@ -77,6 +77,7 @@ const BASE_THREAD: OrchestrationThread = {
   activities: [],
   checkpoints: [],
   session: null,
+  nativeAgents: [],
 };
 
 type TestThreadInput = OrchestrationThreadStreamItem | Error;

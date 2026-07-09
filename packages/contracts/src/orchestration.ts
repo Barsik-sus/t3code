@@ -169,6 +169,36 @@ const OptionalNullThreadIdWithDefault = Schema.NullOr(ThreadId).pipe(
   Schema.withDecodingDefault(Effect.succeed(null)),
 );
 
+export const NativeAgentStatus = Schema.Literals(["running", "completed", "failed", "interrupted"]);
+export type NativeAgentStatus = typeof NativeAgentStatus.Type;
+
+export const OrchestrationNativeAgent = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  title: TrimmedNonEmptyString,
+  detail: Schema.optional(TrimmedNonEmptyString),
+  status: NativeAgentStatus,
+  startedAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  turnId: TurnId,
+});
+export type OrchestrationNativeAgent = typeof OrchestrationNativeAgent.Type;
+
+export const OrchestrationNativeAgentShell = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  title: TrimmedNonEmptyString,
+  status: NativeAgentStatus,
+  startedAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationNativeAgentShell = typeof OrchestrationNativeAgentShell.Type;
+
+const NativeAgentsWithDefault = Schema.Array(OrchestrationNativeAgent).pipe(
+  Schema.withDecodingDefault(Effect.succeed([])),
+);
+const NativeAgentShellsWithDefault = Schema.Array(OrchestrationNativeAgentShell).pipe(
+  Schema.withDecodingDefault(Effect.succeed([])),
+);
+
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -399,6 +429,7 @@ const OrchestrationThreadFields = {
   activities: Schema.Array(OrchestrationThreadActivity),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
+  nativeAgents: NativeAgentsWithDefault,
 } as const;
 
 const OrchestrationThreadSource = Schema.Struct({
@@ -468,6 +499,7 @@ const OrchestrationThreadShellFields = {
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
+  nativeAgents: NativeAgentShellsWithDefault,
 } as const;
 
 const OrchestrationThreadShellSource = Schema.Struct({
@@ -864,6 +896,26 @@ const ThreadActivityAppendCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadNativeAgentUpsertCommand = Schema.Struct({
+  type: Schema.Literal("thread.native-agent.upsert"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString,
+  title: Schema.optional(TrimmedNonEmptyString),
+  detail: Schema.optional(TrimmedNonEmptyString),
+  status: NativeAgentStatus,
+  turnId: TurnId,
+  createdAt: IsoDateTime,
+});
+
+const ThreadNativeAgentsClearCommand = Schema.Struct({
+  type: Schema.Literal("thread.native-agents.clear"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: Schema.optional(TurnId),
+  createdAt: IsoDateTime,
+});
+
 const ThreadRevertCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.revert.complete"),
   commandId: CommandId,
@@ -879,6 +931,8 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
+  ThreadNativeAgentUpsertCommand,
+  ThreadNativeAgentsClearCommand,
   ThreadRevertCompleteCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
@@ -912,6 +966,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.native-agent-upserted",
+  "thread.native-agents-cleared",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1090,6 +1146,17 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
   activity: OrchestrationThreadActivity,
 });
 
+export const ThreadNativeAgentUpsertedPayload = Schema.Struct({
+  threadId: ThreadId,
+  agent: OrchestrationNativeAgent,
+});
+
+export const ThreadNativeAgentsClearedPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: Schema.optional(TurnId),
+  clearedAt: IsoDateTime,
+});
+
 export const OrchestrationEventMetadata = Schema.Struct({
   providerTurnId: Schema.optional(TrimmedNonEmptyString),
   providerItemId: Schema.optional(ProviderItemId),
@@ -1221,6 +1288,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.native-agent-upserted"),
+    payload: ThreadNativeAgentUpsertedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.native-agents-cleared"),
+    payload: ThreadNativeAgentsClearedPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

@@ -1,6 +1,7 @@
 import {
   ArchiveIcon,
   ArrowUpDownIcon,
+  BotIcon,
   ChevronRightIcon,
   CloudIcon,
   ContainerIcon,
@@ -190,6 +191,7 @@ import {
   isContextMenuPointerDown,
   isTrailingDoubleClick,
   resolveProjectStatusIndicator,
+  resolveNativeAgentStatusPill,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarStageBadgeLabel,
@@ -1045,6 +1047,49 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
         renderedThreads.map((node) => {
           const thread = node.thread;
           const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+          if (node.kind === "native-agent" && node.agent) {
+            const agent = node.agent;
+            const indentDepth = Math.min(node.depth, 3);
+            const parentThreadRef = scopeThreadRef(thread.environmentId, thread.id);
+            return (
+              <SidebarMenuSubItem
+                key={`native-agent:${threadKey}:${agent.id}`}
+                className="w-full"
+                data-thread-selection-safe
+              >
+                <SidebarMenuSubButton
+                  render={<div role="button" tabIndex={0} />}
+                  size="sm"
+                  data-testid={`native-agent-row-${agent.id}`}
+                  className="h-6 w-full translate-x-0 cursor-pointer justify-start px-2 text-left text-muted-foreground/85 select-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring sm:h-7"
+                  onClick={(event) =>
+                    handleThreadClick(event, parentThreadRef, orderedProjectThreadKeys)
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      navigateToThread(parentThreadRef);
+                    }
+                  }}
+                >
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+                    <span
+                      aria-hidden
+                      className="shrink-0"
+                      style={{ width: `${indentDepth * 0.75}rem` }}
+                    />
+                    <span aria-hidden className="inline-flex size-4 shrink-0" />
+                    <BotIcon className="size-3 shrink-0 text-muted-foreground/70" />
+                    {node.subtreeStatus && <ThreadStatusLabel status={node.subtreeStatus} />}
+                    <span className="min-w-0 flex-1 truncate text-xs">{agent.title}</span>
+                    <span className="shrink-0 rounded border border-border/60 px-1 text-[9px] uppercase tracking-wide text-muted-foreground/55">
+                      agent
+                    </span>
+                  </div>
+                </SidebarMenuSubButton>
+              </SidebarMenuSubItem>
+            );
+          }
           return (
             <SidebarThreadRow
               key={threadKey}
@@ -1325,7 +1370,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       threadSortOrder,
     );
     const projectStatus = resolveProjectStatusIndicator(
-      visibleProjectThreads.map((thread) => resolveProjectThreadStatus(thread)),
+      visibleProjectThreads.flatMap((thread) => [
+        resolveProjectThreadStatus(thread),
+        ...(thread.nativeAgents ?? []).map((agent) => resolveNativeAgentStatusPill(agent.status)),
+      ]),
     );
     return {
       projectStatus,
@@ -1377,6 +1425,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     // single lone root row (the existing pinned-collapsed behaviour).
     if (pinnedCollapsedThread) {
       const pinnedNode: SidebarThreadTreeNode<SidebarThreadSummary> = {
+        kind: "thread",
         thread: pinnedCollapsedThread,
         depth: 0,
         hasChildren: false,
@@ -1409,7 +1458,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       hasOverflowingThreads: hasHiddenRoots,
       hiddenThreadStatus: resolveProjectStatusIndicator(hidden.map((node) => node.subtreeStatus)),
       renderedThreads: rendered,
-      orderedProjectThreadKeys: rendered.map((node) => keyOf(node.thread)),
+      orderedProjectThreadKeys: rendered
+        .filter((node) => node.kind === "thread")
+        .map((node) => keyOf(node.thread)),
       showEmptyThreadState: projectExpanded && visibleProjectThreads.length === 0,
       shouldShowThreadPanel: projectExpanded,
     };
@@ -3508,7 +3559,7 @@ export default function Sidebar() {
           previewLimit: sidebarThreadPreviewCount,
           isThreadListExpanded: expandedThreadListsByProject.has(project.projectKey),
         });
-        return rendered.map((node) => keyOf(node.thread));
+        return rendered.filter((node) => node.kind === "thread").map((node) => keyOf(node.thread));
       }),
     [
       sidebarThreadSortOrder,

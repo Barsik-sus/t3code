@@ -10,6 +10,7 @@
 import {
   type CanonicalItemType,
   type CanonicalRequestType,
+  EventId,
   type CodexSettings,
   ProviderDriverKind,
   type ProviderEvent,
@@ -216,6 +217,7 @@ function normalizeItemType(raw: string | undefined | null): string {
 
 function toCanonicalItemType(raw: string | undefined | null): CanonicalItemType {
   const type = normalizeItemType(raw);
+  if (type.includes("sub agent activity")) return "collab_agent_tool_call";
   if (type.includes("user")) return "user_message";
   if (type.includes("agent message") || type.includes("assistant")) return "assistant_message";
   if (type.includes("reasoning") || type.includes("thought")) return "reasoning";
@@ -256,6 +258,15 @@ function itemTitle(itemType: CanonicalItemType, item?: CodexLifecycleItem): stri
       return "MCP tool call";
     case "dynamic_tool_call":
       return "Tool call";
+    case "collab_agent_tool_call": {
+      if (item?.type === "collabAgentToolCall") {
+        return collabAgentTitle(item);
+      }
+      if (item?.type === "subAgentActivity") {
+        return trimText(item.agentPath) ?? "Sub-agent";
+      }
+      return "Sub-agent";
+    }
     case "web_search":
       return "Web search";
     case "image_view":
@@ -265,6 +276,100 @@ function itemTitle(itemType: CanonicalItemType, item?: CodexLifecycleItem): stri
     default:
       return undefined;
   }
+}
+
+function firstPromptLine(prompt: string | null | undefined): string | undefined {
+  const line = prompt?.split(/\r?\n/, 1)[0]?.trim();
+  if (!line) return undefined;
+  return line.length <= 100 ? line : `${line.slice(0, 97)}...`;
+}
+
+function collabAgentTitle(
+  item: Extract<CodexLifecycleItem, { type: "collabAgentToolCall" }>,
+): string {
+  return firstPromptLine(item.prompt) ?? trimText(item.model) ?? "Sub-agent";
+}
+
+function mapCollabAgentStatus(
+  status:
+    | EffectCodexSchema.ServerNotification__CollabAgentStatus
+    | "inProgress"
+    | "completed"
+    | "failed",
+): "running" | "completed" | "failed" | "interrupted" {
+  switch (status) {
+    case "pendingInit":
+    case "running":
+    case "inProgress":
+      return "running";
+    case "completed":
+      return "completed";
+    case "errored":
+    case "notFound":
+    case "failed":
+      return "failed";
+    case "interrupted":
+    case "shutdown":
+      return "interrupted";
+  }
+}
+
+function mapAgentLifecycleEvents(
+  event: ProviderEvent,
+  canonicalThreadId: ThreadId,
+  item: CodexLifecycleItem,
+  lifecycle: "item.started" | "item.completed",
+): ReadonlyArray<ProviderRuntimeEvent> {
+  const base = runtimeEventBase(event, canonicalThreadId);
+  if (item.type === "collabAgentToolCall") {
+    const title = collabAgentTitle(item);
+    return item.receiverThreadIds.map((receiverThreadId, index) => {
+      const state = item.agentsStates[receiverThreadId];
+      const status = mapCollabAgentStatus(state?.status ?? item.status);
+      return {
+        ...base,
+        eventId: EventId.make(`${event.id}:agent:${index}:${receiverThreadId}`),
+        type: "agent.lifecycle" as const,
+        payload: {
+          agentKey: receiverThreadId,
+          phase:
+            status === "running"
+              ? lifecycle === "item.started"
+                ? ("started" as const)
+                : ("updated" as const)
+              : ("settled" as const),
+          title,
+          ...(state?.message ? { detail: state.message } : {}),
+          status,
+        },
+      };
+    });
+  }
+
+  if (item.type === "subAgentActivity") {
+    const status = item.kind === "interrupted" ? "interrupted" : "running";
+    return [
+      {
+        ...base,
+        eventId: EventId.make(`${event.id}:agent:${item.agentThreadId}`),
+        type: "agent.lifecycle",
+        payload: {
+          agentKey: item.agentThreadId,
+          phase:
+            item.kind === "started"
+              ? "started"
+              : item.kind === "interrupted"
+                ? "settled"
+                : "updated",
+          title: trimText(item.agentPath) ?? "Sub-agent",
+          ...(trimText(item.agentPath) ? { detail: trimText(item.agentPath) } : {}),
+          status,
+        },
+      },
+    ];
+  }
+
+  return [];
 }
 
 function itemDetail(item: CodexLifecycleItem): string | undefined {
@@ -827,8 +932,14 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "item/started") {
+    const payload = readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload);
     const started = mapItemLifecycle(event, canonicalThreadId, "item.started");
-    return started ? [started] : [];
+    return started && payload
+      ? [
+          started,
+          ...mapAgentLifecycleEvents(event, canonicalThreadId, payload.item, "item.started"),
+        ]
+      : [];
   }
 
   if (event.method === "item/completed") {
@@ -854,7 +965,9 @@ function mapToRuntimeEvents(
       ];
     }
     const completed = mapItemLifecycle(event, canonicalThreadId, "item.completed");
-    return completed ? [completed] : [];
+    return completed
+      ? [completed, ...mapAgentLifecycleEvents(event, canonicalThreadId, item, "item.completed")]
+      : [];
   }
 
   if (

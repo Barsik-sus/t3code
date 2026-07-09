@@ -448,6 +448,141 @@ function startLifecycleRuntime() {
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("maps collab receiver states to native-agent lifecycle events", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* Stream.take(adapter.streamEvents, 4).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* runtime.emit({
+        id: asEventId("evt-collab-started"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/started",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("collab-1"),
+        payload: {
+          startedAtMs: 1_778_000_000_000,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            type: "collabAgentToolCall",
+            id: "collab-1",
+            tool: "spawnAgent",
+            status: "inProgress",
+            senderThreadId: "provider-parent",
+            receiverThreadIds: ["provider-child"],
+            agentsStates: { "provider-child": { status: "pendingInit" } },
+            prompt: "Review the persistence layer\nBe concise",
+            model: "gpt-5.4",
+          },
+        },
+      });
+      yield* runtime.emit({
+        id: asEventId("evt-collab-completed"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:01:00.000Z",
+        method: "item/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("collab-1"),
+        payload: {
+          completedAtMs: 1_778_000_060_000,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            type: "collabAgentToolCall",
+            id: "collab-1",
+            tool: "spawnAgent",
+            status: "completed",
+            senderThreadId: "provider-parent",
+            receiverThreadIds: ["provider-child"],
+            agentsStates: { "provider-child": { status: "completed" } },
+            prompt: "Review the persistence layer\nBe concise",
+            model: "gpt-5.4",
+          },
+        },
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const lifecycle = events.filter((event) => event.type === "agent.lifecycle");
+      NodeAssert.deepStrictEqual(
+        lifecycle.map((event) =>
+          event.type === "agent.lifecycle"
+            ? [
+                event.payload.agentKey,
+                event.payload.phase,
+                event.payload.status,
+                event.payload.title,
+              ]
+            : null,
+        ),
+        [
+          ["provider-child", "started", "running", "Review the persistence layer"],
+          ["provider-child", "settled", "completed", "Review the persistence layer"],
+        ],
+      );
+      const startedItem = events.find((event) => event.type === "item.started");
+      NodeAssert.equal(
+        startedItem?.type === "item.started" ? startedItem.payload.title : undefined,
+        "Review the persistence layer",
+      );
+    }),
+  );
+
+  it.effect("keeps subAgentActivity items and maps interruption lifecycle", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* Stream.take(adapter.streamEvents, 2).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* runtime.emit({
+        id: asEventId("evt-subagent-activity"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("activity-1"),
+        payload: {
+          completedAtMs: 1_778_000_000_000,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            type: "subAgentActivity",
+            id: "activity-1",
+            agentPath: "reviewer",
+            agentThreadId: "provider-child",
+            kind: "interrupted",
+          },
+        },
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      NodeAssert.equal(events[0]?.type, "item.completed");
+      NodeAssert.equal(
+        events[0]?.type === "item.completed" ? events[0].payload.itemType : undefined,
+        "collab_agent_tool_call",
+      );
+      NodeAssert.deepStrictEqual(
+        events[1]?.type === "agent.lifecycle" ? events[1].payload : undefined,
+        {
+          agentKey: "provider-child",
+          phase: "settled",
+          title: "reviewer",
+          detail: "reviewer",
+          status: "interrupted",
+        },
+      );
+    }),
+  );
+
   it.effect("maps completed agent message items to canonical item.completed events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

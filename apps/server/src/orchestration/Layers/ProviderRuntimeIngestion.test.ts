@@ -360,6 +360,90 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("turn failed");
   });
 
+  it("upserts native agents and interrupts then clears them when the turn settles", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-native-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId: asTurnId("turn-native"),
+      payload: {},
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "agent.lifecycle",
+      eventId: asEventId("evt-native-agent-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId: asTurnId("turn-native"),
+      payload: {
+        agentKey: "agent-1",
+        phase: "started",
+        title: "Review persistence",
+        detail: "reviewer",
+        status: "running",
+      },
+    });
+    await harness.drain();
+
+    const runningThread = await Effect.runPromise(
+      harness.engine.getThreadSnapshot(asThreadId("thread-1")),
+    );
+    expect(runningThread?.nativeAgents).toEqual([
+      {
+        id: "agent-1",
+        title: "Review persistence",
+        detail: "reviewer",
+        status: "running",
+        startedAt: "2026-01-01T00:00:01.000Z",
+        updatedAt: "2026-01-01T00:00:01.000Z",
+        turnId: "turn-native",
+      },
+    ]);
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-native-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      turnId: asTurnId("turn-native"),
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    const settledThread = await Effect.runPromise(
+      harness.engine.getThreadSnapshot(asThreadId("thread-1")),
+    );
+    expect(settledThread?.nativeAgents).toEqual([]);
+
+    const events = Array.from(
+      await Effect.runPromise(
+        Stream.runCollect(harness.engine.readEvents(0, Number.MAX_SAFE_INTEGER)),
+      ),
+    );
+    const nativeAgentEvents = events.filter(
+      (event) =>
+        event.type === "thread.native-agent-upserted" ||
+        event.type === "thread.native-agents-cleared",
+    );
+    expect(nativeAgentEvents.map((event) => event.type)).toEqual([
+      "thread.native-agent-upserted",
+      "thread.native-agent-upserted",
+      "thread.native-agents-cleared",
+    ]);
+    const interrupted = nativeAgentEvents[1];
+    expect(
+      interrupted?.type === "thread.native-agent-upserted"
+        ? interrupted.payload.agent.status
+        : undefined,
+    ).toBe("interrupted");
+  });
+
   it("applies provider session.state.changed transitions directly", async () => {
     const harness = await createHarness();
     const waitingAt = "2026-01-01T00:00:00.000Z";

@@ -111,6 +111,7 @@ function makeReadModel(
       latestTurn: null,
       messages: [],
       session: thread.session,
+      nativeAgents: [],
       activities: [],
       proposedPlans: [],
       checkpoints: [],

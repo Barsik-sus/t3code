@@ -16,6 +16,7 @@ import {
   RuntimeMode,
   ThreadId,
   ThreadOrigin,
+  OrchestrationNativeAgent,
   TurnId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -39,6 +40,7 @@ export const ProjectionThread = Schema.Struct({
   threadDepth: NonNegativeInt,
   origin: ThreadOrigin,
   notifyMode: ChildNotifyMode,
+  nativeAgents: Schema.Array(OrchestrationNativeAgent),
   latestTurnId: Schema.NullOr(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

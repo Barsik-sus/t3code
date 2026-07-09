@@ -52,6 +52,7 @@ function makeThread(id: string, projectId: ProjectId): EnvironmentThreadShell {
     updatedAt: "2026-06-01T00:00:00.000Z",
     archivedAt: null,
     session: null,
+    nativeAgents: [],
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,

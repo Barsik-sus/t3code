@@ -86,6 +86,7 @@ export function applyThreadDetailEvent(
           activities: [],
           checkpoints: [],
           session: null,
+          nativeAgents: [],
         },
       };
 
@@ -477,6 +478,24 @@ export function applyThreadDetailEvent(
         thread: { ...thread, activities, updatedAt: event.occurredAt },
       };
     }
+
+    case "thread.native-agent-upserted": {
+      const nativeAgents = thread.nativeAgents.some((agent) => agent.id === event.payload.agent.id)
+        ? Arr.map(thread.nativeAgents, (agent) =>
+            agent.id === event.payload.agent.id ? event.payload.agent : agent,
+          )
+        : Arr.append(thread.nativeAgents, event.payload.agent);
+      return {
+        kind: "updated",
+        thread: { ...thread, nativeAgents, updatedAt: event.occurredAt },
+      };
+    }
+
+    case "thread.native-agents-cleared":
+      return {
+        kind: "updated",
+        thread: { ...thread, nativeAgents: [], updatedAt: event.occurredAt },
+      };
 
     // ── Events that don't mutate thread state directly ──────────────
     case "thread.approval-response-requested":

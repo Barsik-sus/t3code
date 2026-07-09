@@ -58,6 +58,7 @@ function threadDetailToShell(
     origin: thread.origin,
     rootThreadId: thread.rootThreadId,
     depth: thread.depth,
+    nativeAgents: thread.nativeAgents,
     latestTurn: thread.latestTurn,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,

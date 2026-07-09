@@ -383,10 +383,12 @@ it.effect("decodes cached thread snapshots with hierarchy defaults", () =>
     assert.deepStrictEqual(thread.origin, { kind: "user" });
     assert.strictEqual(thread.rootThreadId, "thread-cache-1");
     assert.strictEqual(thread.depth, 0);
+    assert.deepStrictEqual(thread.nativeAgents, []);
     assert.strictEqual(shell.parentThreadId, null);
     assert.deepStrictEqual(shell.origin, { kind: "user" });
     assert.strictEqual(shell.rootThreadId, "thread-cache-1");
     assert.strictEqual(shell.depth, 0);
+    assert.deepStrictEqual(shell.nativeAgents, []);
   }),
 );
 

@@ -17,6 +17,7 @@ import {
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   resolveProjectStatusIndicator,
+  resolveNativeAgentStatusPill,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarStageBadgeLabel,
@@ -673,6 +674,17 @@ describe("resolveThreadStatusPill", () => {
   });
 });
 
+describe("resolveNativeAgentStatusPill", () => {
+  it.each([
+    ["running", "Working", true],
+    ["completed", "Completed", false],
+    ["failed", "Failed", false],
+    ["interrupted", "Interrupted", false],
+  ] as const)("maps %s to %s", (status, label, pulse) => {
+    expect(resolveNativeAgentStatusPill(status)).toMatchObject({ label, pulse });
+  });
+});
+
 describe("resolveThreadRowClassName", () => {
   it("uses the darker selected palette when a thread is both selected and active", () => {
     const className = resolveThreadRowClassName({ isActive: true, isSelected: true });
@@ -847,6 +859,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     depth: 0,
     checkpoints: [],
     activities: [],
+    nativeAgents: [],
     ...overrides,
   };
 }
@@ -1117,6 +1130,49 @@ const FAILED_PILL: ThreadStatusPill = {
 };
 
 describe("buildSidebarThreadTree", () => {
+  it("appends native-agent leaves after real children and rolls running status into a collapsed parent", () => {
+    const parent = {
+      ...treeThread("parent-p", null),
+      nativeAgents: [
+        {
+          id: "agent-1",
+          title: "Review persistence",
+          status: "running" as const,
+          startedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      ],
+    };
+    const child = { ...treeThread("child-c", "parent-p"), nativeAgents: [] };
+    const expanded = buildSidebarThreadTree({
+      threads: [parent, child],
+      expandedThreadIds: expandedSet("parent-p"),
+      pinnedThreadId: null,
+    });
+
+    expect(expanded.map((node) => node.kind)).toEqual(["thread", "thread", "native-agent"]);
+    expect(expanded[2]).toMatchObject({
+      kind: "native-agent",
+      depth: 1,
+      agent: { id: "agent-1", title: "Review persistence" },
+      hasChildren: false,
+      subtreeStatus: { label: "Working", pulse: true },
+    });
+
+    const collapsed = buildSidebarThreadTree({
+      threads: [parent, child],
+      expandedThreadIds: expandedSet(),
+      pinnedThreadId: null,
+    });
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed[0]).toMatchObject({
+      kind: "thread",
+      hasChildren: true,
+      isExpanded: false,
+      subtreeStatus: { label: "Working", pulse: true },
+    });
+  });
+
   it("flattens a child directly below its expanded parent with incremented depth", () => {
     const nodes = buildSidebarThreadTree({
       threads: [

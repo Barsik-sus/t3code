@@ -632,6 +632,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadDepth: hierarchy.threadDepth,
             origin,
             notifyMode,
+            nativeAgents: [],
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -761,6 +762,43 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
+          return;
+        }
+
+        case "thread.native-agent-upserted": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const nativeAgents = existingRow.value.nativeAgents.some(
+            (agent) => agent.id === event.payload.agent.id,
+          )
+            ? existingRow.value.nativeAgents.map((agent) =>
+                agent.id === event.payload.agent.id ? event.payload.agent : agent,
+              )
+            : [...existingRow.value.nativeAgents, event.payload.agent];
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            nativeAgents,
+            updatedAt: event.occurredAt,
+          });
+          return;
+        }
+
+        case "thread.native-agents-cleared": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            nativeAgents: [],
+            updatedAt: event.occurredAt,
+          });
           return;
         }
 

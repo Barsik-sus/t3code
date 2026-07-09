@@ -1270,7 +1270,8 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 8).pipe(
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -1309,6 +1310,24 @@ describe("ClaudeAdapterLive", () => {
       } as unknown as SDKMessage);
 
       harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-task",
+        uuid: "user-task-result-1",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-task-1",
+              content: "Review complete",
+              is_error: false,
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
         type: "assistant",
         session_id: "sdk-session-task",
         uuid: "assistant-task-1",
@@ -1334,6 +1353,94 @@ describe("ClaudeAdapterLive", () => {
       if (toolStarted?.type === "item.started") {
         assert.equal(toolStarted.payload.itemType, "collab_agent_tool_call");
         assert.equal(toolStarted.payload.title, "Subagent task");
+      }
+      const agentEvents = runtimeEvents.filter((event) => event.type === "agent.lifecycle");
+      assert.deepEqual(
+        agentEvents.map((event) =>
+          event.type === "agent.lifecycle"
+            ? [event.payload.phase, event.payload.status, event.payload.title]
+            : null,
+        ),
+        [
+          ["started", "running", "Review the database layer"],
+          ["settled", "completed", "Review the database layer"],
+        ],
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("settles failed Claude Task tool results as failed native agents", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "delegate this",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-task-failed",
+        uuid: "stream-task-failed",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-task-failed",
+            name: "Task",
+            input: { subagent_type: "reviewer" },
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-task-failed",
+        uuid: "user-task-failed",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-task-failed",
+              content: "Agent failed",
+              is_error: true,
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-task-failed",
+        uuid: "result-task-failed",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const settled = runtimeEvents.find(
+        (event) => event.type === "agent.lifecycle" && event.payload.phase === "settled",
+      );
+      assert.equal(settled?.type, "agent.lifecycle");
+      if (settled?.type === "agent.lifecycle") {
+        assert.equal(settled.payload.status, "failed");
+        assert.equal(settled.payload.title, "reviewer");
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
