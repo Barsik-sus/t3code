@@ -1370,7 +1370,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     const projectStatus = resolveProjectStatusIndicator(
       visibleProjectThreads.flatMap((thread) => [
         resolveProjectThreadStatus(thread),
-        ...(thread.nativeAgents ?? []).map((agent) => resolveNativeAgentStatusPill(agent.status)),
+        ...(thread.nativeAgents ?? [])
+          .filter((agent) => agent.status === "running")
+          .map((agent) => resolveNativeAgentStatusPill(agent.status)),
       ]),
     );
     return {

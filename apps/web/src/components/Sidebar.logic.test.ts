@@ -1174,7 +1174,7 @@ describe("buildSidebarThreadTree", () => {
     });
   });
 
-  it("keeps settled native agents from the latest turn visible", () => {
+  it("hides settled native agents from the tree", () => {
     const parent = {
       ...treeThread("parent-settled", null),
       nativeAgents: [
@@ -1187,6 +1187,13 @@ describe("buildSidebarThreadTree", () => {
           startedAt: "2026-01-01T00:00:00.000Z",
           updatedAt: "2026-01-01T00:00:03.000Z",
         },
+        {
+          id: "agent-interrupted",
+          title: "Stopped review",
+          status: "interrupted" as const,
+          startedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:03.000Z",
+        },
       ],
     };
     const nodes = buildSidebarThreadTree({
@@ -1195,11 +1202,11 @@ describe("buildSidebarThreadTree", () => {
       pinnedThreadId: null,
     });
 
-    expect(nodes).toHaveLength(2);
-    expect(nodes[1]).toMatchObject({
-      kind: "native-agent",
-      agent: { id: "agent-settled", status: "completed", turnId: "turn-latest" },
-      subtreeStatus: { label: "Completed" },
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({
+      kind: "thread",
+      hasChildren: false,
+      subtreeStatus: null,
     });
   });
 
