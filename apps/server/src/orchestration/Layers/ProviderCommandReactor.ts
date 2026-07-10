@@ -758,12 +758,14 @@ const make = Effect.gen(function* () {
     }
 
     const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
-    if (!message || message.role !== "user") {
+    // System-role messages are orchestration-injected notifications (child
+    // signals); providers accept them as turn input like user messages.
+    if (!message || (message.role !== "user" && message.role !== "system")) {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.start.failed",
         summary: "Provider turn start failed",
-        detail: `User message '${event.payload.messageId}' was not found for turn start request.`,
+        detail: `Turn input message '${event.payload.messageId}' was not found for turn start request.`,
         turnId: null,
         createdAt: event.payload.createdAt,
       });

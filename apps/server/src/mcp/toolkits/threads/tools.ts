@@ -33,7 +33,6 @@ const CreateChildThreadInput = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
-  notify: Schema.optional(Schema.Literals(["none", "steer"])),
   workspace: Schema.optional(WorkspacePlacement),
 });
 
@@ -80,7 +79,15 @@ const WaitForChildThreadsInput = Schema.Struct({
 const WaitForChildThreadsResult = Schema.Struct({
   settled: Schema.Array(Schema.Unknown),
   blocked: Schema.Array(Schema.Unknown),
-  pending: Schema.Array(Schema.String),
+  pending: Schema.Array(
+    Schema.Struct({
+      childThreadId: Schema.String,
+      sessionStatus: Schema.NullOr(Schema.String),
+      latestTurnState: Schema.NullOr(Schema.String),
+      updatedAt: Schema.NullOr(Schema.String),
+    }),
+  ),
+  timedOut: Schema.Boolean,
 });
 
 const ChildThreadIdInput = Schema.Struct({
@@ -139,7 +146,7 @@ const mutatingThreadTool = <T extends Tool.Any>(tool: T): T =>
 export const CreateChildThreadTool = mutatingThreadTool(
   Tool.make("create_child_thread", {
     description:
-      'Creates a direct sub-thread for this agent session, starts its first turn, and returns the sub-thread id and title. With notify "steer", a short factual message is delivered to this session when the sub-thread settles, blocks, or fails: queued into the running turn if one is live, otherwise starting a new turn on this session. With notify "none" (default), no message is delivered; sub-thread state remains readable via list_child_threads and wait_for_child_threads.',
+      "Creates a direct sub-thread for this agent session, starts its first turn, and returns the sub-thread id and title. When the sub-thread settles, blocks on an approval or question, or fails, a notification carrying its final message is delivered to this session automatically: queued into the running turn if one is live, otherwise starting a new turn. Sub-thread state also remains readable via list_child_threads and wait_for_child_threads.",
     parameters: CreateChildThreadInput,
     success: CreateChildThreadResult,
     failure: ThreadToolError,
@@ -172,7 +179,7 @@ export const ListChildThreadsTool = readonlyThreadTool(
 export const WaitForChildThreadsTool = readonlyThreadTool(
   Tool.make("wait_for_child_threads", {
     description:
-      "Long-polls direct sub-threads created by this agent session until watched sub-threads settle, become blocked, or the timeout elapses.",
+      "Long-polls direct sub-threads created by this agent session until watched sub-threads settle, become blocked, or the poll window closes (at most 45 seconds per call, below typical MCP client timeouts). A non-empty pending array is a normal result carrying each child's current status - re-invoke to continue waiting.",
     parameters: WaitForChildThreadsInput,
     success: WaitForChildThreadsResult,
     failure: ThreadToolError,

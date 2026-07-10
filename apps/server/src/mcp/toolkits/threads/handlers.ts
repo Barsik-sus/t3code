@@ -47,7 +47,10 @@ export const INTERACTION_MODE_DESCRIPTIONS: Record<(typeof INTERACTION_MODES)[nu
   default: "The provider's standard interaction mode.",
   plan: "The session produces a plan before making changes. Claude sessions run in the plan permission mode, which restricts file modifications until a plan is approved.",
 };
-const MAX_WAIT_SECONDS = 600;
+// Effective poll window per call. MCP client transports commonly time out
+// around 60s; returning a pending snapshot before that keeps long waits
+// observable (callers re-invoke) instead of surfacing as transport errors.
+const MAX_WAIT_SECONDS = 45;
 const POLL_INTERVAL_MS = 250;
 
 const fail = (message: string) => Effect.fail({ message });
@@ -202,10 +205,21 @@ const classifyChildThread = (child: OrchestrationThread, requestedTurnId?: strin
     latestTurn.state !== "running" &&
     (!requestedTurnId || latestTurn.turnId === requestedTurnId)
   ) {
+    // latestTurn.assistantMessageId is only populated via checkpoint/diff
+    // completion, so text-only turns leave it null; fall back to the turn's
+    // last complete assistant message, then to the thread's.
+    const reversedMessages = [...child.messages].reverse();
     const finalMessage =
-      latestTurn.assistantMessageId === null
+      (latestTurn.assistantMessageId === null
         ? undefined
-        : child.messages.find((message) => message.id === latestTurn.assistantMessageId)?.text;
+        : child.messages.find((message) => message.id === latestTurn.assistantMessageId)?.text) ??
+      reversedMessages.find(
+        (message) =>
+          message.role === "assistant" &&
+          !message.streaming &&
+          message.turnId === latestTurn.turnId,
+      )?.text ??
+      reversedMessages.find((message) => message.role === "assistant" && !message.streaming)?.text;
     return {
       kind: "settled" as const,
       settled: {
@@ -277,17 +291,46 @@ const makeHandlers = Effect.gen(function* () {
   }) {
     const settled: Array<unknown> = [];
     const blocked: Array<unknown> = [];
-    const pending: Array<string> = [];
+    const pending: Array<{
+      childThreadId: string;
+      sessionStatus: string | null;
+      latestTurnState: string | null;
+      updatedAt: string | null;
+    }> = [];
     let readyChildCount = 0;
     for (const childId of input.childIds) {
       // Poll the engine's dispatch-consistent read model, not the SQL
       // projection: the projection can lag settlement by minutes after
       // heavy turns, and this loop's whole job is to observe settlement.
-      const child = yield* engine.getThreadSnapshot(childId);
-      if (!child) {
-        pending.push(childId);
+      const engineChild = yield* engine.getThreadSnapshot(childId);
+      if (!engineChild) {
+        pending.push({
+          childThreadId: childId,
+          sessionStatus: null,
+          latestTurnState: null,
+          updatedAt: null,
+        });
         continue;
       }
+      // The engine's boot seed carries no messages or activities, so a child
+      // whose turns predate the server start would classify without its
+      // pending requests and final message; hydrate those from the SQL
+      // detail (written synchronously within dispatch).
+      const child =
+        engineChild.messages.length > 0 || engineChild.activities.length > 0
+          ? engineChild
+          : yield* snapshots.getThreadDetailById(childId).pipe(
+              Effect.map(
+                Option.match({
+                  onNone: () => engineChild,
+                  onSome: (detail) => ({
+                    ...engineChild,
+                    messages: detail.messages,
+                    activities: detail.activities,
+                  }),
+                }),
+              ),
+            );
       const classification = classifyChildThread(child, input.turnId);
       if (classification.kind === "settled") {
         settled.push(classification.settled);
@@ -296,7 +339,12 @@ const makeHandlers = Effect.gen(function* () {
         blocked.push(...classification.blocked);
         readyChildCount += 1;
       } else {
-        pending.push(childId);
+        pending.push({
+          childThreadId: childId,
+          sessionStatus: child.session?.status ?? null,
+          latestTurnState: child.latestTurn?.state ?? null,
+          updatedAt: child.updatedAt,
+        });
       }
     }
     const shouldReturn =
@@ -318,7 +366,9 @@ const makeHandlers = Effect.gen(function* () {
         const runtimeMode = input.runtimeMode ?? parent.runtimeMode;
         const interactionMode =
           input.interactionMode ?? parent.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
-        const notify = input.notify ?? "none";
+        // Sub-thread signals always notify the creator; the persisted notify
+        // field survives only for replay compatibility with older events.
+        const notify = "steer" as const;
         const workspace = input.workspace ?? { placement: "parent" as const };
         const snapshot = yield* snapshots.getSnapshot();
         const project = snapshot.projects.find((entry) => entry.id === parent.projectId);
@@ -473,17 +523,17 @@ const makeHandlers = Effect.gen(function* () {
             "turnId may be supplied only when exactly one childThreadId is watched.",
           );
         }
-        const childIds = children.map((child) => child.id);
+        const childIds = [...new Set(children.map((child) => child.id))];
         const mode = input.mode ?? "any";
         const timeoutMs =
-          Math.max(0, Math.min(input.timeoutSeconds ?? 60, MAX_WAIT_SECONDS)) * 1_000;
+          Math.max(0, Math.min(input.timeoutSeconds ?? MAX_WAIT_SECONDS, MAX_WAIT_SECONDS)) * 1_000;
         const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
         let last = yield* waitSnapshot({ childIds, mode, turnId: input.turnId });
         while (!last.shouldReturn && (yield* Clock.currentTimeMillis) < deadline) {
           yield* Effect.sleep(`${POLL_INTERVAL_MS} millis`);
           last = yield* waitSnapshot({ childIds, mode, turnId: input.turnId });
         }
-        return last.result;
+        return { ...last.result, timedOut: !last.shouldReturn };
       }),
 
     get_child_pending_requests: (input) =>

@@ -729,7 +729,11 @@ export const ThreadTurnStartCommand = Schema.Struct({
   threadId: ThreadId,
   message: Schema.Struct({
     messageId: MessageId,
-    role: Schema.Literal("user"),
+    // "system" marks orchestration-injected turn input (child-thread
+    // notifications); clients render it as a notification, providers consume
+    // the text like any turn input. Human-authored turns stay "user"
+    // (ClientThreadTurnStartCommand still pins that).
+    role: Schema.Literals(["user", "system"]),
     text: Schema.String,
     attachments: Schema.Array(ChatAttachment),
   }),

@@ -52,6 +52,7 @@ import {
   CircleAlertIcon,
   EyeIcon,
   GlobeIcon,
+  BellIcon,
   HammerIcon,
   InfoIcon,
   MessageCircleIcon,
@@ -894,6 +895,9 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "work-toggle" ? <WorkGroupToggleTimelineRow row={row} /> : null}
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
+      {row.kind === "message" && row.message.role === "system" ? (
+        <SystemNotificationTimelineRow row={row} />
+      ) : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
       ) : null}
@@ -902,6 +906,56 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
     </div>
   );
 });
+
+// Orchestration-injected notifications (child-thread signals). The message
+// steers the provider like user input, but for the human it is system
+// telemetry: render it as a muted notification card, summary first, with the
+// carried detail (e.g. a sub-thread's final message) behind a toggle.
+function SystemNotificationTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "message" }>;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const [expanded, setExpanded] = useState(false);
+  const text = row.message.text;
+  const newlineIndex = text.indexOf("\n");
+  const summary = (newlineIndex === -1 ? text : text.slice(0, newlineIndex)).trim();
+  const detail = newlineIndex === -1 ? "" : text.slice(newlineIndex + 1).trim();
+
+  return (
+    <div className="rounded-lg border border-border/60 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+      <div className="flex items-start gap-2">
+        <BellIcon aria-hidden className="mt-1 size-3.5 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-x-2">
+            <span className="break-words">{summary}</span>
+            {detail.length > 0 ? (
+              <Button
+                className="h-auto p-0 text-xs text-muted-foreground underline-offset-2 hover:underline"
+                onClick={() => setExpanded((value) => !value)}
+                size="sm"
+                variant="ghost"
+              >
+                {expanded ? "Hide details" : "Show details"}
+              </Button>
+            ) : null}
+          </div>
+          {expanded && detail.length > 0 ? (
+            <div className="mt-2 border-t border-border/60 pt-2">
+              <ChatMarkdown
+                cwd={ctx.markdownCwd}
+                isStreaming={false}
+                text={detail}
+                threadRef={ctx.threadRef ?? undefined}
+              />
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);

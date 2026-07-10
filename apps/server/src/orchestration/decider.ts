@@ -551,7 +551,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           messageId: command.message.messageId,
-          role: "user",
+          // System-role turn inputs are orchestration-injected notifications
+          // (e.g. child-thread signals); anything else is creator input.
+          role: command.message.role === "system" ? "system" : "user",
           text: command.message.text,
           attachments: command.message.attachments,
           turnId: null,

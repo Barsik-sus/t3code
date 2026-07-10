@@ -163,7 +163,7 @@ const ReactorDependenciesLive = Layer.mergeAll(
   ProviderCommandReactorLive,
   CheckpointReactorLive,
   ThreadDeletionReactorLive,
-  ChildSignalReactorLive.pipe(Layer.provide(ProjectionThreadRepositoryLive)),
+  ChildSignalReactorLive,
   AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer)),
 ).pipe(Layer.provideMerge(RuntimeReceiptBusLive), Layer.provideMerge(OrchestrationLayerLive));
 
