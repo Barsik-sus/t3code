@@ -228,7 +228,7 @@ interface PendingUserInput {
   readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
 }
 
-type CodexServerNotification = {
+export type CodexServerNotification = {
   readonly [M in CodexRpc.ServerNotificationMethod]: {
     readonly method: M;
     readonly params: CodexRpc.ServerNotificationParamsByMethod[M];
@@ -587,10 +587,11 @@ function readRouteFields(notification: CodexServerNotification): {
   }
 }
 
-function rememberCollabReceiverTurns(
-  collabReceiverTurns: Map<string, TurnId>,
+export function rememberChildConversationTurns(
+  childConversationTurns: Map<string, TurnId>,
   notification: CodexServerNotification,
   parentTurnId: TurnId | undefined,
+  sessionConversationId: string | undefined,
 ): void {
   if (!parentTurnId) {
     return;
@@ -600,12 +601,26 @@ function rememberCollabReceiverTurns(
     return;
   }
 
-  if (notification.params.item.type !== "collabAgentToolCall") {
+  const item = notification.params.item;
+  if (item.type === "collabAgentToolCall") {
+    for (const receiverThreadId of item.receiverThreadIds) {
+      if (receiverThreadId === sessionConversationId) {
+        continue;
+      }
+      childConversationTurns.set(receiverThreadId, parentTurnId);
+    }
     return;
   }
 
-  for (const receiverThreadId of notification.params.item.receiverThreadIds) {
-    collabReceiverTurns.set(receiverThreadId, parentTurnId);
+  // Codex's native sub-agent mechanism announces children via subAgentActivity
+  // items instead of collab receiver ids. A child's activity can also reference
+  // the session's own conversation (e.g. kind "interacted" pointing back at the
+  // parent), which must never be registered as a child of itself.
+  if (item.type === "subAgentActivity") {
+    if (item.agentThreadId === sessionConversationId) {
+      return;
+    }
+    childConversationTurns.set(item.agentThreadId, parentTurnId);
   }
 }
 
@@ -696,7 +711,7 @@ export const makeCodexSessionRuntime = (
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
-    const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
+    const childConversationTurnsRef = yield* Ref.make(new Map<string, TurnId>());
     const closedRef = yield* Ref.make(false);
 
     // `~` is not shell-expanded when env vars are set via
@@ -817,15 +832,24 @@ export const makeCodexSessionRuntime = (
       Effect.gen(function* () {
         const payload = notification.params;
         const route = readRouteFields(notification);
-        const collabReceiverTurns = yield* Ref.get(collabReceiverTurnsRef);
+        const childConversationTurns = yield* Ref.get(childConversationTurnsRef);
         const providerConversationId = readNotificationThreadId(notification);
         const childParentTurnId = providerConversationId
-          ? collabReceiverTurns.get(providerConversationId)
+          ? childConversationTurns.get(providerConversationId)
           : undefined;
 
-        rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
+        const sessionConversationId = currentProviderThreadId(yield* Ref.get(sessionRef));
+        rememberChildConversationTurns(
+          childConversationTurns,
+          notification,
+          // A spawn announced on an already-registered child conversation (a
+          // grandchild) belongs to the session-level parent turn, not to the
+          // child's own turn id, which orchestration doesn't know about.
+          childParentTurnId ?? route.turnId,
+          sessionConversationId,
+        );
         if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {
-          yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
+          yield* Ref.set(childConversationTurnsRef, childConversationTurns);
           return;
         }
 
@@ -855,7 +879,7 @@ export const makeCodexSessionRuntime = (
           }
         }
 
-        yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
+        yield* Ref.set(childConversationTurnsRef, childConversationTurns);
         yield* emitEvent({
           kind: "notification",
           threadId: options.threadId,
