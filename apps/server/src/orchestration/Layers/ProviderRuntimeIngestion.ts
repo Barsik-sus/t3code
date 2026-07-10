@@ -294,7 +294,9 @@ function runtimeEventToActivities(
   switch (event.type) {
     case "agent.item": {
       const isMessage =
-        event.payload.itemType === "assistant_message" || event.payload.itemType === "plan";
+        event.payload.itemType === "assistant_message" ||
+        event.payload.itemType === "user_message" ||
+        event.payload.itemType === "plan";
       const isReasoning = event.payload.itemType === "reasoning";
       const isTool = isToolLifecycleItemType(event.payload.itemType);
       const kind = isMessage

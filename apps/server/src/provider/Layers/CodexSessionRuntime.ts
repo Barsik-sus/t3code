@@ -26,6 +26,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -191,6 +192,18 @@ export class CodexSessionRuntimeInvalidUserInputAnswersError extends Schema.Tagg
 ) {
   override get message(): string {
     return `Invalid Codex user input answers for question '${this.questionId}'`;
+  }
+}
+
+class CodexChildTurnPromptPendingError extends Schema.TaggedErrorClass<CodexChildTurnPromptPendingError>()(
+  "CodexChildTurnPromptPendingError",
+  {
+    childThreadId: Schema.String,
+    childTurnId: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Prompt for sub-agent thread '${this.childThreadId}' turn '${this.childTurnId}' is not readable yet`;
   }
 }
 
@@ -712,6 +725,7 @@ export const makeCodexSessionRuntime = (
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
     const childConversationTurnsRef = yield* Ref.make(new Map<string, TurnId>());
+    const syncedChildTurnPromptsRef = yield* Ref.make(new Set<string>());
     const closedRef = yield* Ref.make(false);
 
     // `~` is not shell-expanded when env vars are set via
@@ -828,6 +842,38 @@ export const makeCodexSessionRuntime = (
         ),
       );
 
+    // Codex never notifies the prompt injected into a sub-agent thread — it
+    // exists only in the child thread's stored state. Fetch it when a child
+    // turn starts and replay it through the notification pipeline, so the
+    // agent transcript begins with what the child was asked to do.
+    const syncChildTurnUserMessages = (childThreadId: string, childTurnId: string) =>
+      Effect.gen(function* () {
+        const response = yield* client.request("thread/read", {
+          threadId: childThreadId,
+          includeTurns: true,
+        });
+        const turn = response.thread.turns.find((candidate) => candidate.id === childTurnId);
+        const userMessages = (turn?.items ?? []).filter((item) => item.type === "userMessage");
+        if (userMessages.length === 0) {
+          return yield* new CodexChildTurnPromptPendingError({ childThreadId, childTurnId });
+        }
+        const completedAtMs = DateTime.toEpochMillis(yield* DateTime.now);
+        yield* Effect.forEach(
+          userMessages,
+          (item) =>
+            Queue.offer(
+              serverNotifications,
+              makeCodexServerNotification("item/completed", {
+                completedAtMs,
+                item,
+                threadId: childThreadId,
+                turnId: childTurnId,
+              }),
+            ),
+          { discard: true },
+        );
+      }).pipe(Effect.retry({ schedule: Schedule.spaced("400 millis"), times: 4 }), Effect.ignore);
+
     const handleRawNotification = (notification: CodexServerNotification) =>
       Effect.gen(function* () {
         const payload = notification.params;
@@ -851,6 +897,24 @@ export const makeCodexSessionRuntime = (
         if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {
           yield* Ref.set(childConversationTurnsRef, childConversationTurns);
           return;
+        }
+
+        if (
+          notification.method === "turn/started" &&
+          childParentTurnId !== undefined &&
+          providerConversationId !== undefined
+        ) {
+          const childTurnId = notification.params.turn.id;
+          const syncKey = `${providerConversationId}:${childTurnId}`;
+          const syncedChildTurnPrompts = yield* Ref.get(syncedChildTurnPromptsRef);
+          if (!syncedChildTurnPrompts.has(syncKey)) {
+            yield* Ref.update(syncedChildTurnPromptsRef, (current) =>
+              new Set(current).add(syncKey),
+            );
+            yield* syncChildTurnUserMessages(providerConversationId, childTurnId).pipe(
+              Effect.forkIn(runtimeScope),
+            );
+          }
         }
 
         let requestId: ApprovalRequestId | undefined;

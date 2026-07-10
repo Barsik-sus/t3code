@@ -115,6 +115,40 @@ describe("native-agent transcript derivation", () => {
       entry: { itemType: "command_execution", toolLifecycleStatus: "inProgress" },
     });
   });
+
+  it("renders the sub-agent's prompt as a user message", () => {
+    const timeline = deriveNativeAgentTimelineEntries(
+      [
+        makeActivity({
+          id: "agent-prompt",
+          kind: "agent.message",
+          summary: "User message",
+          tone: "info",
+          payload: { itemType: "user_message", detail: "Research TS7 and report back" },
+          agentId: "agent-1",
+        }),
+        makeActivity({
+          id: "agent-answer",
+          kind: "agent.message",
+          summary: "Assistant message",
+          tone: "info",
+          payload: { itemType: "assistant_message", detail: "TS7 is stable" },
+          agentId: "agent-1",
+        }),
+      ],
+      "agent-1",
+    );
+
+    expect(timeline).toHaveLength(2);
+    expect(timeline[0]).toMatchObject({
+      kind: "message",
+      message: { role: "user", text: "Research TS7 and report back" },
+    });
+    expect(timeline[1]).toMatchObject({
+      kind: "message",
+      message: { role: "assistant", text: "TS7 is stable" },
+    });
+  });
 });
 
 describe("derivePendingApprovals", () => {

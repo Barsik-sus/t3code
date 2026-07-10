@@ -614,6 +614,12 @@ function agentItemDetail(item: CodexLifecycleItem): string | undefined {
       .filter((part): part is string => part !== undefined);
     return parts.length > 0 ? parts.join("\n\n") : undefined;
   }
+  if (item.type === "userMessage") {
+    const parts = item.content
+      .map((entry) => (entry.type === "text" ? trimText(entry.text) : undefined))
+      .filter((part): part is string => part !== undefined);
+    return parts.length > 0 ? parts.join("\n\n") : undefined;
+  }
   return undefined;
 }
 

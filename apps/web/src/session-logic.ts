@@ -1851,7 +1851,7 @@ export function deriveNativeAgentTimelineEntries(
       const text = typeof payload?.detail === "string" ? payload.detail : activity.summary;
       return {
         id: MessageId.make(`native-agent:${agentId}:${activity.id}`),
-        role: "assistant",
+        role: payload?.itemType === "user_message" ? ("user" as const) : ("assistant" as const),
         text,
         turnId: activity.turnId,
         streaming: false,
