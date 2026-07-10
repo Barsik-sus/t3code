@@ -4,7 +4,7 @@ import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe } from "vite-plus/test";
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId, TurnId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
@@ -17,6 +17,8 @@ import {
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   openCodexThread,
+  rememberChildConversationTurns,
+  type CodexServerNotification,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
@@ -342,4 +344,87 @@ describe("openCodexThread", () => {
       NodeAssert.equal(error.errorMessage, "timed out waiting for server");
     }),
   );
+});
+
+describe("rememberChildConversationTurns", () => {
+  const parentTurnId = TurnId.make("parent-turn");
+  const sessionConversationId = "provider-parent";
+
+  const itemStarted = (
+    item: Extract<CodexServerNotification, { method: "item/started" }>["params"]["item"],
+    threadId = sessionConversationId,
+  ): CodexServerNotification =>
+    ({
+      method: "item/started",
+      params: { item, startedAtMs: 1_778_000_000_000, threadId, turnId: "provider-turn" },
+    }) as CodexServerNotification;
+
+  const subAgentActivity = (agentThreadId: string, threadId?: string) =>
+    itemStarted(
+      {
+        type: "subAgentActivity",
+        id: "activity-1",
+        agentPath: "/root/researcher",
+        agentThreadId,
+        kind: "started",
+      },
+      threadId,
+    );
+
+  it("registers collab receiver conversations", () => {
+    const turns = new Map<string, TurnId>();
+    rememberChildConversationTurns(
+      turns,
+      itemStarted({
+        type: "collabAgentToolCall",
+        id: "collab-1",
+        tool: "spawnAgent",
+        status: "inProgress",
+        senderThreadId: sessionConversationId,
+        receiverThreadIds: ["provider-child", sessionConversationId],
+        agentsStates: {},
+        prompt: "Review",
+        model: null,
+        reasoningEffort: null,
+      }),
+      parentTurnId,
+      sessionConversationId,
+    );
+    NodeAssert.deepStrictEqual(Array.from(turns), [["provider-child", parentTurnId]]);
+  });
+
+  it("registers native sub-agent conversations announced via subAgentActivity", () => {
+    const turns = new Map<string, TurnId>();
+    rememberChildConversationTurns(
+      turns,
+      subAgentActivity("provider-child"),
+      parentTurnId,
+      sessionConversationId,
+    );
+    NodeAssert.deepStrictEqual(Array.from(turns), [["provider-child", parentTurnId]]);
+  });
+
+  it("never registers the session's own conversation as its child", () => {
+    const turns = new Map<string, TurnId>();
+    rememberChildConversationTurns(
+      turns,
+      // A child's activity referencing the parent (kind "interacted" arrives on
+      // the child conversation but points at the session's own thread).
+      subAgentActivity(sessionConversationId, "provider-child"),
+      parentTurnId,
+      sessionConversationId,
+    );
+    NodeAssert.equal(turns.size, 0);
+  });
+
+  it("ignores notifications without a resolved parent turn", () => {
+    const turns = new Map<string, TurnId>();
+    rememberChildConversationTurns(
+      turns,
+      subAgentActivity("provider-child"),
+      undefined,
+      sessionConversationId,
+    );
+    NodeAssert.equal(turns.size, 0);
+  });
 });
