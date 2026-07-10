@@ -17,6 +17,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
@@ -143,8 +144,12 @@ describe("ProviderSessionReaper", () => {
     readonly stopSessionImplementation?: (input: {
       readonly threadId: ThreadId;
     }) => ReturnType<ProviderServiceShape["stopSession"]>;
+    // Most tests exercise the periodic sweep in isolation; boot recovery
+    // would settle every pre-start binding first and mask sweep behavior.
+    readonly recoverOrphanedSessionsOnStart?: boolean;
   }) {
     const stoppedThreadIds = new Set<ThreadId>();
+    const dispatchedCommands: Array<{ type: string }> = [];
     const stopSession = vi.fn<ProviderServiceShape["stopSession"]>(
       (request) =>
         (input.stopSessionImplementation
@@ -189,6 +194,7 @@ describe("ProviderSessionReaper", () => {
     const layer = makeProviderSessionReaperLive({
       inactivityThresholdMs: 1_000,
       sweepIntervalMs: 60_000,
+      recoverOrphanedSessionsOnStart: input.recoverOrphanedSessionsOnStart ?? false,
     }).pipe(
       Layer.provideMerge(providerSessionDirectoryLayer),
       Layer.provideMerge(runtimeRepositoryLayer),
@@ -217,11 +223,23 @@ describe("ProviderSessionReaper", () => {
           getThreadDetailSnapshot: () => Effect.die("unused"),
         }),
       ),
+      Layer.provideMerge(
+        Layer.succeed(OrchestrationEngineService, {
+          dispatch: (command: { type: string }) =>
+            Effect.sync(() => {
+              dispatchedCommands.push(command);
+              return { sequence: 0 };
+            }),
+          readEvents: () => Stream.empty,
+          getThreadSnapshot: () => Effect.succeed(undefined),
+          streamDomainEvents: Stream.empty,
+        } as unknown as (typeof OrchestrationEngineService)["Service"]),
+      ),
       Layer.provideMerge(NodeServices.layer),
     );
 
     runtime = ManagedRuntime.make(layer);
-    return { stopSession, stoppedThreadIds };
+    return { stopSession, stoppedThreadIds, dispatchedCommands };
   }
 
   it("reaps stale persisted sessions without active turns", async () => {
@@ -590,5 +608,64 @@ describe("ProviderSessionReaper", () => {
       defectThreadId,
       reapedThreadId,
     ]);
+  });
+
+  it("settles orphaned pre-restart sessions at startup, including active turns", async () => {
+    const threadId = ThreadId.make("thread-reaper-orphan");
+    const turnId = TurnId.make("turn-reaper-orphan");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      recoverOrphanedSessionsOnStart: true,
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+
+    // The binding's lastSeenAt predates the (real-clock) recovery run, so it
+    // is an orphan from a previous server process.
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: now,
+        resumeCursor: {
+          opaque: "resume-orphan",
+        },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(() => harness.dispatchedCommands.length === 1);
+
+    const dispatched = harness.dispatchedCommands[0] as {
+      type: string;
+      session?: { status?: string; activeTurnId?: unknown };
+    };
+    expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId });
+    expect(dispatched.type).toBe("thread.session.set");
+    expect(dispatched.session?.status).toBe("stopped");
+    expect(dispatched.session?.activeTurnId).toBeNull();
   });
 });
