@@ -555,7 +555,11 @@ export function buildSidebarThreadTree<
 }): Array<SidebarThreadTreeNode<TThread>> {
   const { expandedThreadIds, pinnedThreadId, threads } = input;
   const resolveStatus = input.resolveStatus ?? (() => null);
-  const nativeAgentsOf = (thread: TThread) => thread.nativeAgents ?? [];
+  // Settled agents stay in thread state (an open transcript view keeps
+  // working) but leave the tree, so finished work doesn't pile up under the
+  // thread.
+  const nativeAgentsOf = (thread: TThread) =>
+    (thread.nativeAgents ?? []).filter((agent) => agent.status === "running");
 
   const byId = new Map<ThreadId, TThread>();
   const inputIndex = new Map<ThreadId, number>();
